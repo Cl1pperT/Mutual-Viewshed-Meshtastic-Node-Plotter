@@ -13,8 +13,15 @@ if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
   PYTHON_BIN="python3"
 fi
 
-BACKEND_CMD="$PYTHON_BIN -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 --app-dir backend --reload-exclude backend/.venv/*"
-FRONTEND_CMD="npm run dev:frontend"
+BACKEND_ARGS=(
+  -m uvicorn app.main:app
+  --reload
+  --host 0.0.0.0
+  --port 8000
+  --app-dir backend
+  --reload-exclude "backend/.venv/*"
+)
+FRONTEND_CMD=(npm run dev:frontend)
 
 cleanup() {
   if [[ -n "${BACKEND_PID:-}" ]]; then
@@ -29,13 +36,13 @@ trap cleanup EXIT
 
 (
   cd "$ROOT_DIR"
-  eval "$BACKEND_CMD"
+  "$PYTHON_BIN" "${BACKEND_ARGS[@]}"
 ) &
 BACKEND_PID=$!
 
 (
   cd "$ROOT_DIR"
-  eval "$FRONTEND_CMD"
+  "${FRONTEND_CMD[@]}"
 ) &
 FRONTEND_PID=$!
 
