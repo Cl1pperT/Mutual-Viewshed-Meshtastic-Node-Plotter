@@ -1,0 +1,10 @@
+{
+  "name": "@local/types",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./index.ts",
+    "./schema": "./viewshed.schema.json"
+  }
+}

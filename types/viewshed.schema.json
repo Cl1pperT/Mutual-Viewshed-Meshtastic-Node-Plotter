@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ViewshedRequest",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "observer": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "lat": { "type": "number" },
+        "lon": { "type": "number" },
+        "heightMeters": { "type": "number" }
+      },
+      "required": ["lat", "lon", "heightMeters"]
+    },
+    "maxDistanceMeters": { "type": "number" },
+    "resolutionMeters": { "type": "number" }
+  },
+  "required": ["observer", "maxDistanceMeters", "resolutionMeters"]
+}

@@ -1,0 +1,176 @@
+:root {
+  color-scheme: light;
+  font-family: "SF Mono", "Fira Mono", "Roboto Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+  line-height: 1.5;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #f6f4ef;
+  color: #1b1b1b;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.app {
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  gap: 1.5rem;
+  min-height: 100vh;
+  padding: 2rem clamp(1.5rem, 4vw, 3rem) 2.5rem;
+}
+
+.app__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem 2rem;
+}
+
+.app__header h1 {
+  margin: 0 0 0.25rem;
+  font-size: clamp(1.75rem, 3vw, 2.5rem);
+}
+
+.app__header p {
+  margin: 0;
+  color: #3f3f3f;
+}
+
+.btn {
+  border: 1px solid #1b1b1b;
+  background: #1b1b1b;
+  color: #f6f4ef;
+  padding: 0.65rem 1.25rem;
+  font-size: 0.95rem;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.btn--ghost {
+  background: transparent;
+  color: #1b1b1b;
+}
+
+.btn:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
+}
+
+.panel {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1.5rem;
+  border: 1px solid #dad7d0;
+  background: #fffdf7;
+  padding: 1.25rem 1.5rem;
+}
+
+.panel h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.panel__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  font-weight: 600;
+}
+
+.label {
+  color: #6d675e;
+  font-weight: 500;
+}
+
+.value {
+  color: #111;
+}
+
+.status {
+  margin-top: 0.75rem;
+  color: #9a3412;
+  font-size: 0.9rem;
+}
+
+.form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem 1.5rem;
+  width: 100%;
+}
+
+.form__group {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.form__group label {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #6d675e;
+}
+
+.form__group input {
+  padding: 0.55rem 0.65rem;
+  border: 1px solid #cfcac0;
+  border-radius: 0.25rem;
+  font-size: 0.95rem;
+}
+
+.error {
+  color: #b42318;
+  font-size: 0.85rem;
+}
+
+.form__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.form__actions .btn {
+  width: 100%;
+  justify-content: center;
+}
+
+.form__error {
+  grid-column: 1 / -1;
+}
+
+.code {
+  margin: 0;
+  padding: 0.75rem;
+  background: #f1efe9;
+  border: 1px solid #e2ddd3;
+  font-size: 0.85rem;
+  overflow-x: auto;
+}
+
+.map {
+  border: 1px solid #dad7d0;
+  background: #ebe7df;
+  min-height: 60vh;
+}
+
+.map__container {
+  height: 100%;
+  min-height: 60vh;
+  width: 100%;
+}
