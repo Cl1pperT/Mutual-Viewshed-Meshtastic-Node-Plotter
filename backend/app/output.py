@@ -29,6 +29,8 @@ def visibility_mask_to_png(
   crs: str,
   color_rgb: tuple[int, int, int] = (37, 99, 235),
   alpha: int = 96,
+  background_rgb: tuple[int, int, int] = (255, 255, 255),
+  background_alpha: int = 0,
 ) -> RasterOutput:
   """
   Convert a boolean visibility mask to a PNG with alpha and metadata.
@@ -41,11 +43,15 @@ def visibility_mask_to_png(
     raise ValueError("mask must be a 2D array.")
   if not (0 <= alpha <= 255):
     raise ValueError("alpha must be between 0 and 255.")
+  if not (0 <= background_alpha <= 255):
+    raise ValueError("background_alpha must be between 0 and 255.")
 
   height, width = mask.shape
   rgba = np.zeros((height, width, 4), dtype=np.uint8)
-  rgba[:, :, :3] = np.array(color_rgb, dtype=np.uint8)
-  rgba[:, :, 3] = np.where(mask, alpha, 0).astype(np.uint8)
+  rgba[:, :, :3] = np.array(background_rgb, dtype=np.uint8)
+  rgba[:, :, 3] = background_alpha
+  rgba[mask, :3] = np.array(color_rgb, dtype=np.uint8)
+  rgba[mask, 3] = alpha
 
   image = Image.fromarray(rgba, mode="RGBA")
   buffer = BytesIO()

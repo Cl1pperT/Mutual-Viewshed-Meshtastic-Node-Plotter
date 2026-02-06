@@ -23,6 +23,36 @@ def compute_viewshed(
   return _compute_viewshed_radial(dem, observer_rc, observer_height_m, cell_size_m)
 
 
+def smooth_visibility_mask(mask: np.ndarray, passes: int = 1, threshold: int | None = None) -> np.ndarray:
+  """
+  Reduce speckle by applying a majority filter over a 3x3 neighborhood.
+  """
+
+  if mask.ndim != 2:
+    raise ValueError("mask must be a 2D array.")
+  if passes < 1:
+    return mask
+
+  current = mask.astype(np.uint8)
+  for _ in range(passes):
+    padded = np.pad(current, 1, mode="constant", constant_values=0)
+    window_sum = (
+      padded[0:-2, 0:-2]
+      + padded[0:-2, 1:-1]
+      + padded[0:-2, 2:]
+      + padded[1:-1, 0:-2]
+      + padded[1:-1, 1:-1]
+      + padded[1:-1, 2:]
+      + padded[2:, 0:-2]
+      + padded[2:, 1:-1]
+      + padded[2:, 2:]
+    )
+    required = threshold if threshold is not None else 5
+    current = (window_sum >= required).astype(np.uint8)
+
+  return current.astype(bool)
+
+
 def compute_viewshed_baseline(
   dem: np.ndarray,
   observer_rc: tuple[int, int],

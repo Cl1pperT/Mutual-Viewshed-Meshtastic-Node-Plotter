@@ -13,7 +13,7 @@ from pyproj import CRS, Transformer
 from app.cache import load_cached_payload, load_cached_viewshed, make_cache_key, store_cached_viewshed, list_cached_viewsheds
 from app.dem import get_dem, get_dem_version
 from app.output import RasterOutput, visibility_mask_to_png
-from app.viewshed import compute_viewshed as compute_viewshed_mask
+from app.viewshed import compute_viewshed as compute_viewshed_mask, smooth_visibility_mask
 
 app = FastAPI(title="Local Viewshed Explorer API")
 
@@ -229,6 +229,8 @@ def compute_viewshed_endpoint(payload: ViewshedRequest, debug: int = Query(0, ge
     )
   except Exception as exc:
     raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+  visibility = smooth_visibility_mask(visibility, passes=1)
   timings["viewshed_compute_s"] = time.perf_counter() - compute_start
 
   encode_start = time.perf_counter()
@@ -236,6 +238,10 @@ def compute_viewshed_endpoint(payload: ViewshedRequest, debug: int = Query(0, ge
     mask=visibility,
     transform=dem_result.transform,
     crs=dem_result.crs,
+    color_rgb=(220, 38, 38),
+    alpha=255,
+    background_rgb=(255, 255, 255),
+    background_alpha=255,
   )
   timings["encode_png_s"] = time.perf_counter() - encode_start
 
