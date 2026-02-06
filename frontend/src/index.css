@@ -189,6 +189,47 @@ body {
   grid-column: 1 / -1;
 }
 
+.loading {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.loading__bar {
+  position: relative;
+  height: 6px;
+  border-radius: 999px;
+  background: #e7e1d8;
+  overflow: hidden;
+}
+
+.loading__bar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  background: #2563eb;
+  animation: loading-move 1.2s ease-in-out infinite;
+}
+
+.loading__label {
+  font-size: 0.85rem;
+  color: #4b4b4b;
+}
+
+@keyframes loading-move {
+  0% {
+    transform: translateX(-100%);
+  }
+  50% {
+    transform: translateX(150%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}
+
 .code {
   margin: 0;
   padding: 0.75rem;

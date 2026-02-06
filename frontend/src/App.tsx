@@ -390,6 +390,12 @@ export default function App() {
               Clear Overlay
             </button>
           </div>
+          {isSubmitting ? (
+            <div className="loading">
+              <div className="loading__bar" />
+              <span className="loading__label">Computing viewshed…</span>
+            </div>
+          ) : null}
           {submitError ? <div className="error form__error">{submitError}</div> : null}
         </form>
       </section>
