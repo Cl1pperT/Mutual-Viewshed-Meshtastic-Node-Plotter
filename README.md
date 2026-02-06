@@ -8,18 +8,35 @@ Monorepo skeleton for a web app with a React + Vite + TypeScript frontend, a Fas
 - `types/` Shared JSON schema and TypeScript types
 
 ## Dev Commands
-Frontend (from repo root):
+One command to run both frontend and backend (from repo root):
 ```bash
 npm install
+npm run dev
+```
+
+Frontend only (from repo root):
+```bash
 npm run dev:frontend
 ```
 
-Backend (from repo root):
+Backend only (from repo root):
 ```bash
-python -m venv backend/.venv
+python3 -m venv backend/.venv
 source backend/.venv/bin/activate
 pip install -r backend/requirements.txt
 npm run dev:backend
+```
+
+## Prefetch DEM Tiles
+You can predownload geography data (Terrarium DEM tiles) into the cache:
+```bash
+source backend/.venv/bin/activate
+python backend/scripts/prefetch_dem.py --state utah --preset fast
+```
+
+Options:
+```bash
+python backend/scripts/prefetch_dem.py --help
 ```
 
 ## Notes
