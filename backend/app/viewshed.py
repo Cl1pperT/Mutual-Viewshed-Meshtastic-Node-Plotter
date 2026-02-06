@@ -12,7 +12,7 @@ def compute_viewshed(
   cell_size_m: float,
 ) -> np.ndarray:
   """
-  Compute a boolean visibility mask for a DEM using line-of-sight sampling.
+  Compute a boolean visibility mask for a DEM using a radial sweep / horizon method.
 
   dem: 2D array of elevations (meters)
   observer_rc: (row, col) index of the observer in the DEM
@@ -20,18 +20,86 @@ def compute_viewshed(
   cell_size_m: square cell size (meters)
   """
 
-  if dem.ndim != 2:
-    raise ValueError("DEM must be a 2D array.")
-  if cell_size_m <= 0:
-    raise ValueError("cell_size_m must be positive.")
-  if observer_height_m < 0:
-    raise ValueError("observer_height_m must be non-negative.")
+  return _compute_viewshed_radial(dem, observer_rc, observer_height_m, cell_size_m)
+
+
+def compute_viewshed_baseline(
+  dem: np.ndarray,
+  observer_rc: tuple[int, int],
+  observer_height_m: float,
+  cell_size_m: float,
+) -> np.ndarray:
+  """
+  Baseline (slow) line-of-sight sampling implementation.
+  Kept for correctness checks and benchmarking.
+  """
+
+  return _compute_viewshed_baseline(dem, observer_rc, observer_height_m, cell_size_m)
+
+
+def _compute_viewshed_radial(
+  dem: np.ndarray,
+  observer_rc: tuple[int, int],
+  observer_height_m: float,
+  cell_size_m: float,
+) -> np.ndarray:
+  _validate_inputs(dem, observer_rc, observer_height_m, cell_size_m)
 
   rows, cols = dem.shape
   obs_r, obs_c = observer_rc
-  if not (0 <= obs_r < rows and 0 <= obs_c < cols):
-    raise IndexError("Observer index out of bounds.")
+  observer_ground = float(dem[obs_r, obs_c])
+  if math.isnan(observer_ground):
+    raise ValueError("Observer elevation is NaN.")
 
+  observer_elevation = observer_ground + observer_height_m
+  visibility = np.zeros((rows, cols), dtype=bool)
+  visibility[obs_r, obs_c] = True
+
+  rays: dict[tuple[int, int], list[tuple[int, int, int, float]]] = {}
+
+  for r in range(rows):
+    for c in range(cols):
+      if r == obs_r and c == obs_c:
+        continue
+      target = float(dem[r, c])
+      if math.isnan(target):
+        continue
+
+      dr = r - obs_r
+      dc = c - obs_c
+      g = math.gcd(abs(dr), abs(dc))
+      if g == 0:
+        continue
+      direction = (dr // g, dc // g)
+
+      distance = math.hypot(dr, dc) * cell_size_m
+      angle = math.atan2(target - observer_elevation, distance)
+
+      rays.setdefault(direction, []).append((g, r, c, angle))
+
+  epsilon = 1e-12
+  for entries in rays.values():
+    entries.sort(key=lambda item: item[0])
+    max_angle = -math.inf
+    for _, r, c, angle in entries:
+      if angle >= max_angle - epsilon:
+        visibility[r, c] = True
+        if angle > max_angle:
+          max_angle = angle
+
+  return visibility
+
+
+def _compute_viewshed_baseline(
+  dem: np.ndarray,
+  observer_rc: tuple[int, int],
+  observer_height_m: float,
+  cell_size_m: float,
+) -> np.ndarray:
+  _validate_inputs(dem, observer_rc, observer_height_m, cell_size_m)
+
+  rows, cols = dem.shape
+  obs_r, obs_c = observer_rc
   observer_ground = float(dem[obs_r, obs_c])
   if math.isnan(observer_ground):
     raise ValueError("Observer elevation is NaN.")
@@ -59,6 +127,25 @@ def compute_viewshed(
         visibility[r, c] = True
 
   return visibility
+
+
+def _validate_inputs(
+  dem: np.ndarray,
+  observer_rc: tuple[int, int],
+  observer_height_m: float,
+  cell_size_m: float,
+) -> None:
+  if dem.ndim != 2:
+    raise ValueError("DEM must be a 2D array.")
+  if cell_size_m <= 0:
+    raise ValueError("cell_size_m must be positive.")
+  if observer_height_m < 0:
+    raise ValueError("observer_height_m must be non-negative.")
+
+  rows, cols = dem.shape
+  obs_r, obs_c = observer_rc
+  if not (0 <= obs_r < rows and 0 <= obs_c < cols):
+    raise IndexError("Observer index out of bounds.")
 
 
 def _line_of_sight(
