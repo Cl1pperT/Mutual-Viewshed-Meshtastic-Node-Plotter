@@ -15,7 +15,7 @@ from app.dem.providers.base import DemProvider
 from app.dem.providers.terrarium import TerrariumProvider
 from app.dem.types import DemResult
 
-DEFAULT_CACHE_DIR = Path(__file__).resolve().parents[2] / "data" / "dem"
+DEFAULT_CACHE_DIR = Path(__file__).resolve().parents[3] / "data" / "dem"
 
 
 def get_dem(
