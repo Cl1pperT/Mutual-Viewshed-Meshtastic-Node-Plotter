@@ -615,11 +615,7 @@ export default function App() {
       });
   };
 
-  const observerText = isMultiMode
-    ? `${multiObservers.length} point${multiObservers.length === 1 ? '' : 's'} selected`
-    : observer
-    ? `${observer.lat.toFixed(6)}, ${observer.lng.toFixed(6)}`
-    : 'Not set';
+  const observerText = observer ? `${observer.lat.toFixed(6)}, ${observer.lng.toFixed(6)}` : 'Not set';
 
   const markers = isMultiMode ? multiObservers : observer ? [observer] : [];
   const consideredBoundsLatLng = consideredBounds
@@ -645,55 +641,9 @@ export default function App() {
         </button>
       </header>
 
-      <section className="panel">
-        <div>
-          <h2>Observer</h2>
-          <div className="panel__row">
-            <span className="label">{isMultiMode ? 'Points' : 'Lat/Lon'}</span>
-            <span className="value">{observerText}</span>
-          </div>
-          {isMultiMode ? (
-            <div className="points">
-              {multiObservers.length === 0 ? (
-                <div className="status">No points yet. Click the map to add observer points.</div>
-              ) : (
-                <div className="points__list">
-                  {multiObservers.map((point, index) => (
-                    <div key={`${point.lat}-${point.lng}-${index}`} className="points__item">
-                      <span className="points__meta">
-                        {point.lat.toFixed(5)}, {point.lng.toFixed(5)}
-                      </span>
-                      <button
-                        type="button"
-                        className="points__remove"
-                        onClick={() => handleRemoveObserver(index)}
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div className="points__actions">
-                <button
-                  type="button"
-                  className="btn btn--ghost"
-                  onClick={handleClearObservers}
-                  disabled={multiObservers.length === 0}
-                >
-                  Clear Points
-                </button>
-              </div>
-            </div>
-          ) : null}
-          {errors.observers ? <div className="status">{errors.observers}</div> : null}
-          {errors.observer ? <div className="status">{errors.observer}</div> : null}
-          {status ? <div className="status">{status}</div> : null}
-        </div>
-      </section>
-
-      <section className="panel">
-        <form className="form" onSubmit={handleSubmit}>
+      <section className="panel panel--form">
+        <div className="form-layout">
+          <form className="form" onSubmit={handleSubmit}>
           <div className="form__group form__group--full">
             <label>Presets</label>
             <div className="presets">
@@ -850,7 +800,58 @@ export default function App() {
             </div>
           ) : null}
           {submitError ? <div className="error form__error">{submitError}</div> : null}
-        </form>
+          </form>
+          <aside className="positions">
+            <h2>Positions</h2>
+            {errors.observers ? <div className="status">{errors.observers}</div> : null}
+            {errors.observer ? <div className="status">{errors.observer}</div> : null}
+            {status ? <div className="status">{status}</div> : null}
+            {isMultiMode ? (
+              <div className="points">
+                {multiObservers.length === 0 ? (
+                  <div className="status">No points yet. Click the map to add observer points.</div>
+                ) : (
+                  <div className="points__list">
+                    {multiObservers.map((point, index) => (
+                      <div key={`${point.lat}-${point.lng}-${index}`} className="points__item">
+                        <span className="points__meta">
+                          {point.lat.toFixed(5)}, {point.lng.toFixed(5)}
+                        </span>
+                        <button
+                          type="button"
+                          className="points__remove"
+                          onClick={() => handleRemoveObserver(index)}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="points__actions">
+                  <button
+                    type="button"
+                    className="btn btn--ghost"
+                    onClick={handleClearObservers}
+                    disabled={multiObservers.length === 0}
+                  >
+                    Clear Points
+                  </button>
+                </div>
+              </div>
+            ) : observer ? (
+              <div className="points">
+                <div className="points__item">
+                  <span className="points__meta">
+                    {observer.lat.toFixed(5)}, {observer.lng.toFixed(5)}
+                  </span>
+                </div>
+              </div>
+            ) : (
+              <div className="status">Select a point on the map to set the observer.</div>
+            )}
+          </aside>
+        </div>
       </section>
 
       <section className="panel">
