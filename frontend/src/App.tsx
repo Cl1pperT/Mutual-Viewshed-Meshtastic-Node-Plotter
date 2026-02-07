@@ -42,6 +42,8 @@ type OverlayPayload = {
   boundsLatLon: [number, number, number, number];
 };
 
+type ComputeMode = 'accurate' | 'fast';
+
 type HistoryItem = {
   cacheKey: string;
   createdAt?: string | null;
@@ -54,6 +56,7 @@ type HistoryItem = {
     observerHeightM?: number;
     maxRadiusKm?: number;
     resolutionM?: number;
+    mode?: ComputeMode;
   } | null;
   boundsLatLon?: [number, number, number, number] | null;
 };
@@ -127,6 +130,7 @@ export default function App() {
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [isHistoryLoading, setIsHistoryLoading] = useState(false);
   const [isHistoryCollapsed, setIsHistoryCollapsed] = useState(false);
+  const [computeMode, setComputeMode] = useState<ComputeMode>('accurate');
 
   const matchedPreset = useMemo(() => {
     return (
@@ -277,6 +281,9 @@ export default function App() {
             maxRadiusKm: String(request.maxRadiusKm ?? current.maxRadiusKm),
             resolutionMeters: String(request.resolutionM ?? current.resolutionMeters),
           }));
+          if (request.mode === 'fast' || request.mode === 'accurate') {
+            setComputeMode(request.mode);
+          }
         }
       })
       .catch((error: Error) => {
@@ -354,7 +361,7 @@ export default function App() {
     setSubmitError(null);
     setOverlay(null);
 
-    fetch(`${API_BASE_URL}/viewshed`, {
+    fetch(`${API_BASE_URL}/viewshed?mode=${computeMode}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -432,6 +439,25 @@ export default function App() {
                   {preset.label}
                 </button>
               ))}
+            </div>
+          </div>
+          <div className="form__group form__group--full">
+            <label>Mode</label>
+            <div className="presets">
+              <button
+                type="button"
+                className={`preset-btn${computeMode === 'accurate' ? ' preset-btn--active' : ''}`}
+                onClick={() => setComputeMode('accurate')}
+              >
+                Accurate
+              </button>
+              <button
+                type="button"
+                className={`preset-btn${computeMode === 'fast' ? ' preset-btn--active' : ''}`}
+                onClick={() => setComputeMode('fast')}
+              >
+                Fast
+              </button>
             </div>
           </div>
           <div className="form__group">
@@ -543,6 +569,7 @@ export default function App() {
                     const lon = item.request?.observer?.lon;
                     const radius = item.request?.maxRadiusKm;
                     const resolution = item.request?.resolutionM;
+                    const mode = item.request?.mode;
                     return (
                       <li key={item.cacheKey} className="history__item">
                         <button className="history__button" type="button" onClick={() => handleLoadHistory(item)}>
@@ -557,6 +584,9 @@ export default function App() {
                               ? `${radius} km · ${resolution} m`
                               : 'Unknown params'}
                           </div>
+                          {mode ? (
+                            <div className="history__meta">{mode === 'fast' ? 'Fast' : 'Accurate'}</div>
+                          ) : null}
                         </button>
                         <button
                           className="history__delete"

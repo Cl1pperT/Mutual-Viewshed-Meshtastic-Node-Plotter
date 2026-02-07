@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import math
 import time
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,7 +20,11 @@ from app.cache import (
 )
 from app.dem import get_dem, get_dem_version
 from app.output import RasterOutput, visibility_mask_to_png
-from app.viewshed import compute_viewshed as compute_viewshed_mask, smooth_visibility_mask
+from app.viewshed import (
+  compute_viewshed as compute_viewshed_baseline,
+  compute_viewshed_radial,
+  smooth_visibility_mask,
+)
 
 app = FastAPI(title="Local Viewshed Explorer API")
 
@@ -143,7 +147,11 @@ def delete_viewshed_cache(cache_key: str) -> dict:
 
 
 @app.post("/viewshed", response_model=ViewshedResponse)
-def compute_viewshed_endpoint(payload: ViewshedRequest, debug: int = Query(0, ge=0, le=1)) -> ViewshedResponse:
+def compute_viewshed_endpoint(
+  payload: ViewshedRequest,
+  debug: int = Query(0, ge=0, le=1),
+  mode: Literal["fast", "accurate"] = Query("accurate"),
+) -> ViewshedResponse:
   timings: dict[str, float] = {}
   request_start = time.perf_counter()
 
@@ -180,6 +188,7 @@ def compute_viewshed_endpoint(payload: ViewshedRequest, debug: int = Query(0, ge
     max_radius_km=payload.maxRadiusKm,
     resolution_m=payload.resolutionM,
     dem_version=dem_version,
+    algorithm=mode,
   )
   cached = load_cached_viewshed(cache_key)
   if cached is not None:
@@ -235,12 +244,20 @@ def compute_viewshed_endpoint(payload: ViewshedRequest, debug: int = Query(0, ge
 
   compute_start = time.perf_counter()
   try:
-    visibility = compute_viewshed_mask(
-      dem,
-      observer_rc=(observer_row, observer_col),
-      observer_height_m=payload.observerHeightM,
-      cell_size_m=cell_size_m,
-    )
+    if mode == "fast":
+      visibility = compute_viewshed_radial(
+        dem,
+        observer_rc=(observer_row, observer_col),
+        observer_height_m=payload.observerHeightM,
+        cell_size_m=cell_size_m,
+      )
+    else:
+      visibility = compute_viewshed_baseline(
+        dem,
+        observer_rc=(observer_row, observer_col),
+        observer_height_m=payload.observerHeightM,
+        cell_size_m=cell_size_m,
+      )
   except Exception as exc:
     raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -271,6 +288,7 @@ def compute_viewshed_endpoint(payload: ViewshedRequest, debug: int = Query(0, ge
       "observerHeightM": payload.observerHeightM,
       "maxRadiusKm": payload.maxRadiusKm,
       "resolutionM": payload.resolutionM,
+      "mode": mode,
     },
     dem_version=dem_version,
   )

@@ -20,6 +20,19 @@ def compute_viewshed(
   cell_size_m: square cell size (meters)
   """
 
+  return _compute_viewshed_baseline(dem, observer_rc, observer_height_m, cell_size_m)
+
+
+def compute_viewshed_radial(
+  dem: np.ndarray,
+  observer_rc: tuple[int, int],
+  observer_height_m: float,
+  cell_size_m: float,
+) -> np.ndarray:
+  """
+  Compute a visibility mask using a radial sweep / horizon method (faster, less accurate).
+  """
+
   return _compute_viewshed_radial(dem, observer_rc, observer_height_m, cell_size_m)
 
 

@@ -33,6 +33,7 @@ def make_cache_key(
   max_radius_km: float,
   resolution_m: float,
   dem_version: str,
+  algorithm: str = "accurate",
 ) -> str:
   payload = {
     "cacheVersion": CACHE_VERSION,
@@ -45,6 +46,7 @@ def make_cache_key(
       "observerHeightM": float(observer_height_m),
       "maxRadiusKm": float(max_radius_km),
       "resolutionM": float(resolution_m),
+      "mode": algorithm,
     },
   }
 
