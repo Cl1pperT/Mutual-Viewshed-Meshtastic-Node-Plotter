@@ -27,6 +27,16 @@ body {
   padding: 2rem clamp(1.5rem, 4vw, 3rem) 2.5rem;
 }
 
+.app--map-fullscreen {
+  grid-template-rows: 1fr;
+  padding: 0;
+}
+
+.app--map-fullscreen .app__header,
+.app--map-fullscreen .panel {
+  display: none;
+}
+
 .app__header {
   display: flex;
   flex-wrap: wrap;
@@ -381,12 +391,32 @@ body {
   border: 1px solid #dad7d0;
   background: #ebe7df;
   min-height: 60vh;
+  position: relative;
 }
 
 .map__container {
   height: 100%;
   min-height: 60vh;
   width: 100%;
+}
+
+.map__fullscreen {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  z-index: 1000;
+}
+
+.map--fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  border: none;
+  background: #ebe7df;
+}
+
+.map--fullscreen .map__container {
+  min-height: 100vh;
 }
 
 @media (max-width: 900px) {

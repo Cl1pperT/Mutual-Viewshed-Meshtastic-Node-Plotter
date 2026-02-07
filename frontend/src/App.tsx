@@ -132,6 +132,7 @@ export default function App() {
   const [consideredBounds, setConsideredBounds] = useState<ConsideredBounds | null>(null);
   const [areaDraft, setAreaDraft] = useState<ObserverState | null>(null);
   const [mapTool, setMapTool] = useState<'observer' | 'area'>('observer');
+  const [isMapFullscreen, setIsMapFullscreen] = useState(false);
   const [mapCenter, setMapCenter] = useState<LatLngLiteral>(DEFAULT_CENTER);
   const [status, setStatus] = useState<string | null>(null);
   const [params, setParams] = useState<ParamsState>({
@@ -630,7 +631,7 @@ export default function App() {
   }, []);
 
   return (
-    <div className="app">
+    <div className={`app${isMapFullscreen ? ' app--map-fullscreen' : ''}`}>
       <header className="app__header">
         <div>
           <h1>Local Viewshed Explorer</h1>
@@ -925,7 +926,7 @@ export default function App() {
         </div>
       </section>
 
-      <section className="map">
+      <section className={`map${isMapFullscreen ? ' map--fullscreen' : ''}`}>
         <MapContainer center={mapCenter} zoom={DEFAULT_ZOOM} scrollWheelZoom className="map__container">
           <MapViewController center={mapCenter} />
           <MapClickHandler onSelect={handleMapSelect} />
@@ -954,6 +955,11 @@ export default function App() {
             />
           ) : null}
         </MapContainer>
+        <div className="map__fullscreen">
+          <button className="btn btn--ghost" type="button" onClick={() => setIsMapFullscreen((value) => !value)}>
+            {isMapFullscreen ? 'Exit Full Screen' : 'Full Screen'}
+          </button>
+        </div>
       </section>
     </div>
   );
