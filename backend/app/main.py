@@ -261,7 +261,10 @@ def compute_viewshed_endpoint(
   except Exception as exc:
     raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-  visibility = smooth_visibility_mask(visibility, passes=2, threshold=7)
+  if mode == "accurate":
+    visibility = smooth_visibility_mask(visibility, passes=1, threshold=3)
+  else:
+    visibility = smooth_visibility_mask(visibility, passes=2, threshold=7)
   timings["viewshed_compute_s"] = time.perf_counter() - compute_start
 
   encode_start = time.perf_counter()
