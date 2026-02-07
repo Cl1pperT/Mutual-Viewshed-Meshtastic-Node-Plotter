@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import type { LatLngLiteral } from 'leaflet';
 import L from 'leaflet';
-import { ImageOverlay, MapContainer, Marker, TileLayer, useMap, useMapEvents } from 'react-leaflet';
+import { ImageOverlay, MapContainer, Marker, Rectangle, TileLayer, useMap, useMapEvents } from 'react-leaflet';
 import iconRetinaUrl from 'leaflet/dist/images/marker-icon-2x.png';
 import iconUrl from 'leaflet/dist/images/marker-icon.png';
 import shadowUrl from 'leaflet/dist/images/marker-shadow.png';
@@ -27,6 +27,13 @@ const MAX_GRID_SIDE = 2000;
 type ObserverState = {
   lat: number;
   lng: number;
+};
+
+type ConsideredBounds = {
+  minLat: number;
+  minLon: number;
+  maxLat: number;
+  maxLon: number;
 };
 
 type ParamsState = {
@@ -61,6 +68,7 @@ type HistoryItem = {
     maxRadiusKm?: number;
     resolutionM?: number;
     mode?: ComputeMode;
+    consideredBounds?: ConsideredBounds;
   } | null;
   boundsLatLon?: [number, number, number, number] | null;
 };
@@ -121,6 +129,9 @@ export default function App() {
   const [observer, setObserver] = useState<ObserverState | null>(null);
   const [multiObservers, setMultiObservers] = useState<ObserverState[]>([]);
   const [isMultiMode, setIsMultiMode] = useState(false);
+  const [consideredBounds, setConsideredBounds] = useState<ConsideredBounds | null>(null);
+  const [areaDraft, setAreaDraft] = useState<ObserverState | null>(null);
+  const [mapTool, setMapTool] = useState<'observer' | 'area'>('observer');
   const [mapCenter, setMapCenter] = useState<LatLngLiteral>(DEFAULT_CENTER);
   const [status, setStatus] = useState<string | null>(null);
   const [params, setParams] = useState<ParamsState>({
@@ -174,25 +185,33 @@ export default function App() {
       if (observersForApi.length === 0) {
         return null;
       }
-      return {
+      const payload: Record<string, unknown> = {
         observers: observersForApi,
         observerHeightM: Number(params.observerHeightMeters),
         maxRadiusKm: Number(params.maxRadiusKm),
         resolutionM: Number(params.resolutionMeters),
       };
+      if (consideredBounds) {
+        payload.consideredBounds = consideredBounds;
+      }
+      return payload;
     }
 
     if (!observerForApi) {
       return null;
     }
 
-    return {
+    const payload: Record<string, unknown> = {
       observer: observerForApi,
       observerHeightM: Number(params.observerHeightMeters),
       maxRadiusKm: Number(params.maxRadiusKm),
       resolutionM: Number(params.resolutionMeters),
     };
-  }, [isMultiMode, observerForApi, observersForApi, params]);
+    if (consideredBounds) {
+      payload.consideredBounds = consideredBounds;
+    }
+    return payload;
+  }, [consideredBounds, isMultiMode, observerForApi, observersForApi, params]);
 
   const estimate = useMemo(() => {
     const radiusKm = Number(params.maxRadiusKm);
@@ -204,6 +223,48 @@ export default function App() {
       return null;
     }
     const radiusM = radiusKm * 1000;
+
+    if (consideredBounds) {
+      let minX = Number.POSITIVE_INFINITY;
+      let minY = Number.POSITIVE_INFINITY;
+      let maxX = Number.NEGATIVE_INFINITY;
+      let maxY = Number.NEGATIVE_INFINITY;
+
+      const corners = [
+        { lat: consideredBounds.minLat, lng: consideredBounds.minLon },
+        { lat: consideredBounds.minLat, lng: consideredBounds.maxLon },
+        { lat: consideredBounds.maxLat, lng: consideredBounds.minLon },
+        { lat: consideredBounds.maxLat, lng: consideredBounds.maxLon },
+      ];
+      corners.forEach((corner) => {
+        const projected = L.CRS.EPSG3857.project(L.latLng(corner.lat, corner.lng));
+        minX = Math.min(minX, projected.x);
+        minY = Math.min(minY, projected.y);
+        maxX = Math.max(maxX, projected.x);
+        maxY = Math.max(maxY, projected.y);
+      });
+
+      const points = isMultiMode ? multiObservers : observer ? [observer] : [];
+      points.forEach((point) => {
+        const projected = L.CRS.EPSG3857.project(L.latLng(point.lat, point.lng));
+        minX = Math.min(minX, projected.x);
+        minY = Math.min(minY, projected.y);
+        maxX = Math.max(maxX, projected.x);
+        maxY = Math.max(maxY, projected.y);
+      });
+
+      if (!Number.isFinite(minX) || !Number.isFinite(minY)) {
+        return null;
+      }
+
+      const widthM = maxX - minX;
+      const heightM = maxY - minY;
+      const gridWidth = Math.ceil(widthM / resolutionM) + 1;
+      const gridHeight = Math.ceil(heightM / resolutionM) + 1;
+      const gridSide = Math.max(gridWidth, gridHeight);
+      const cellCount = gridWidth * gridHeight;
+      return { gridWidth, gridHeight, gridSide, cellCount };
+    }
 
     if (isMultiMode && multiObservers.length > 0) {
       let minX = Number.POSITIVE_INFINITY;
@@ -231,7 +292,7 @@ export default function App() {
     const gridSide = Math.ceil((2 * radiusM) / resolutionM) + 1;
     const cellCount = gridSide * gridSide;
     return { gridWidth: gridSide, gridHeight: gridSide, gridSide, cellCount };
-  }, [isMultiMode, multiObservers, params.maxRadiusKm, params.resolutionMeters]);
+  }, [consideredBounds, isMultiMode, multiObservers, observer, params.maxRadiusKm, params.resolutionMeters]);
 
   const guardrail = useMemo(() => {
     if (!estimate) {
@@ -270,6 +331,40 @@ export default function App() {
       return [...current, coords];
     });
     setMapCenter(coords);
+  };
+
+  const normalizeSquareBounds = (start: ObserverState, end: ObserverState): ConsideredBounds => {
+    const startPoint = L.CRS.EPSG3857.project(L.latLng(start.lat, start.lng));
+    const endPoint = L.CRS.EPSG3857.project(L.latLng(end.lat, end.lng));
+    const dx = endPoint.x - startPoint.x;
+    const dy = endPoint.y - startPoint.y;
+    const size = Math.max(Math.abs(dx), Math.abs(dy));
+    const signX = dx >= 0 ? 1 : -1;
+    const signY = dy >= 0 ? 1 : -1;
+    const squareEnd = L.CRS.EPSG3857.unproject(
+      L.point(startPoint.x + signX * size, startPoint.y + signY * size)
+    );
+    return {
+      minLat: Math.min(start.lat, squareEnd.lat),
+      minLon: Math.min(start.lng, squareEnd.lng),
+      maxLat: Math.max(start.lat, squareEnd.lat),
+      maxLon: Math.max(start.lng, squareEnd.lng),
+    };
+  };
+
+  const handleDrawArea = () => {
+    setMapTool('area');
+    setAreaDraft(null);
+    setStatus('Click two corners to set the considered square.');
+  };
+
+  const handleClearArea = () => {
+    setConsideredBounds(null);
+    setAreaDraft(null);
+    if (mapTool === 'area') {
+      setMapTool('observer');
+      setStatus(null);
+    }
   };
 
   const handleMapTypeChange = (nextIsMulti: boolean) => {
@@ -315,6 +410,19 @@ export default function App() {
   };
 
   const handleMapSelect = (coords: ObserverState) => {
+    if (mapTool === 'area') {
+      if (!areaDraft) {
+        setAreaDraft(coords);
+        setStatus('Now click the opposite corner to finish the area.');
+        return;
+      }
+      const bounds = normalizeSquareBounds(areaDraft, coords);
+      setConsideredBounds(bounds);
+      setAreaDraft(null);
+      setMapTool('observer');
+      setStatus(null);
+      return;
+    }
     if (isMultiMode) {
       addObserverPoint(coords);
       return;
@@ -391,6 +499,11 @@ export default function App() {
           if (request.mode === 'fast' || request.mode === 'accurate') {
             setComputeMode(request.mode);
           }
+          if (request.consideredBounds) {
+            setConsideredBounds(request.consideredBounds);
+          } else {
+            setConsideredBounds(null);
+          }
         }
       })
       .catch((error: Error) => {
@@ -456,6 +569,10 @@ export default function App() {
       nextErrors.guardrail = `Requested grid ${estimate.gridSide}x${estimate.gridSide} (~${estimate.cellCount.toLocaleString()} cells) exceeds limits.`;
     }
 
+    if (areaDraft) {
+      nextErrors.guardrail = 'Finish drawing the considered area (pick the second corner).';
+    }
+
     return nextErrors;
   };
 
@@ -505,6 +622,12 @@ export default function App() {
     : 'Not set';
 
   const markers = isMultiMode ? multiObservers : observer ? [observer] : [];
+  const consideredBoundsLatLng = consideredBounds
+    ? ([
+        [consideredBounds.minLat, consideredBounds.minLon],
+        [consideredBounds.maxLat, consideredBounds.maxLon],
+      ] as [[number, number], [number, number]])
+    : null;
 
   useEffect(() => {
     fetchHistory();
@@ -614,6 +737,33 @@ export default function App() {
                 Complex
               </button>
             </div>
+          </div>
+          <div className="form__group form__group--full">
+            <label>Considered Area</label>
+            <div className="presets">
+              <button
+                type="button"
+                className={`preset-btn${mapTool === 'area' ? ' preset-btn--active' : ''}`}
+                onClick={handleDrawArea}
+              >
+                {mapTool === 'area' ? 'Click 2 Corners' : 'Draw Area'}
+              </button>
+              <button
+                type="button"
+                className="preset-btn"
+                onClick={handleClearArea}
+                disabled={!consideredBounds && !areaDraft}
+              >
+                Clear Area
+              </button>
+            </div>
+            {consideredBounds ? (
+              <div className="estimate">
+                Area: {consideredBounds.minLat.toFixed(3)}, {consideredBounds.minLon.toFixed(3)} →{' '}
+                {consideredBounds.maxLat.toFixed(3)}, {consideredBounds.maxLon.toFixed(3)}
+              </div>
+            ) : null}
+            {areaDraft ? <div className="warning">Click the opposite corner to finish the square.</div> : null}
           </div>
           <div className="form__group form__group--full">
             <label>Mode</label>
@@ -799,6 +949,9 @@ export default function App() {
               icon={DEFAULT_MARKER_ICON}
             />
           ))}
+          {consideredBoundsLatLng ? (
+            <Rectangle bounds={consideredBoundsLatLng} pathOptions={{ color: '#0f172a', weight: 2, dashArray: '4' }} />
+          ) : null}
           {overlay ? (
             <ImageOverlay
               url={`data:image/png;base64,${overlay.pngBase64}`}

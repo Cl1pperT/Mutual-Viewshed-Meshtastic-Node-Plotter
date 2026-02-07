@@ -37,8 +37,8 @@ app = FastAPI(title="Local Viewshed Explorer API")
 MAX_GRID_SIDE = 2000
 WARN_CELL_COUNT = 1_000_000
 MAX_CELL_COUNT = 4_000_000
-MAX_OBSERVERS = 12
 MAX_PARALLEL_WORKERS = max(1, (os.cpu_count() or 1))
+MAX_OBSERVERS = min(8, MAX_PARALLEL_WORKERS)
 
 app.add_middleware(
   CORSMiddleware,
@@ -71,11 +71,49 @@ class Observer(BaseModel):
     return value
 
 
+class BoundsLatLon(BaseModel):
+  minLat: float
+  minLon: float
+  maxLat: float
+  maxLon: float
+
+  @field_validator("minLat", "maxLat")
+  @classmethod
+  def validate_lat(cls, value: float) -> float:
+    if not -90 <= value <= 90:
+      raise ValueError("Latitude must be between -90 and 90.")
+    return value
+
+  @field_validator("minLon", "maxLon")
+  @classmethod
+  def validate_lon(cls, value: float) -> float:
+    if not -180 <= value <= 180:
+      raise ValueError("Longitude must be between -180 and 180.")
+    return value
+
+  @field_validator("maxLat")
+  @classmethod
+  def validate_lat_order(cls, value: float, info) -> float:
+    min_lat = info.data.get("minLat")
+    if min_lat is not None and value < min_lat:
+      raise ValueError("maxLat must be greater than or equal to minLat.")
+    return value
+
+  @field_validator("maxLon")
+  @classmethod
+  def validate_lon_order(cls, value: float, info) -> float:
+    min_lon = info.data.get("minLon")
+    if min_lon is not None and value < min_lon:
+      raise ValueError("maxLon must be greater than or equal to minLon.")
+    return value
+
+
 class ViewshedRequest(BaseModel):
   observer: Observer
   observerHeightM: float = Field(gt=0)
   maxRadiusKm: float = Field(gt=0)
   resolutionM: float = Field(gt=0)
+  consideredBounds: BoundsLatLon | None = None
 
 
 class MultiViewshedRequest(BaseModel):
@@ -83,6 +121,7 @@ class MultiViewshedRequest(BaseModel):
   observerHeightM: float = Field(gt=0)
   maxRadiusKm: float = Field(gt=0)
   resolutionM: float = Field(gt=0)
+  consideredBounds: BoundsLatLon | None = None
 
 
 class ViewshedResponse(BaseModel):
@@ -180,14 +219,22 @@ def compute_viewshed_endpoint(
   timings: dict[str, float] = {}
   request_start = time.perf_counter()
 
-  grid_side, cell_count = _estimate_grid(payload.maxRadiusKm, payload.resolutionM)
+  if payload.consideredBounds:
+    bounds_m = _bounds_from_observers_meters([payload.observer], payload.maxRadiusKm * 1000.0, payload.consideredBounds)
+    grid_width, grid_height, grid_side, cell_count = _estimate_grid_for_bounds(
+      bounds_m, payload.resolutionM
+    )
+  else:
+    grid_side, cell_count = _estimate_grid(payload.maxRadiusKm, payload.resolutionM)
+    grid_width = grid_side
+    grid_height = grid_side
   warnings: list[str] = []
 
   if grid_side > MAX_GRID_SIDE or cell_count > MAX_CELL_COUNT:
     raise HTTPException(
       status_code=400,
       detail=(
-        f"Requested grid {grid_side}x{grid_side} (~{cell_count:,} cells) exceeds "
+        f"Requested grid {grid_width}x{grid_height} (~{cell_count:,} cells) exceeds "
         f"limit {MAX_GRID_SIDE}x{MAX_GRID_SIDE} (~{MAX_CELL_COUNT:,} cells). "
         "Reduce radius or increase resolution."
       ),
@@ -195,16 +242,30 @@ def compute_viewshed_endpoint(
 
   if cell_count > WARN_CELL_COUNT:
     warnings.append(
-      f"Large request: estimated grid {grid_side}x{grid_side} (~{cell_count:,} cells). "
+      f"Large request: estimated grid {grid_width}x{grid_height} (~{cell_count:,} cells). "
       "Computation may be slow."
     )
 
-  dem_version = get_dem_version(
-    observer_lat=payload.observer.lat,
-    observer_lon=payload.observer.lon,
-    radius_km=payload.maxRadiusKm,
-    resolution_m=payload.resolutionM,
-  )
+  considered_bounds = _bounds_to_dict(payload.consideredBounds)
+  if payload.consideredBounds:
+    min_lat = min(payload.consideredBounds.minLat, payload.observer.lat)
+    max_lat = max(payload.consideredBounds.maxLat, payload.observer.lat)
+    min_lon = min(payload.consideredBounds.minLon, payload.observer.lon)
+    max_lon = max(payload.consideredBounds.maxLon, payload.observer.lon)
+    dem_version = get_dem_version_for_bbox(
+      min_lat=min_lat,
+      min_lon=min_lon,
+      max_lat=max_lat,
+      max_lon=max_lon,
+      resolution_m=payload.resolutionM,
+    )
+  else:
+    dem_version = get_dem_version(
+      observer_lat=payload.observer.lat,
+      observer_lon=payload.observer.lon,
+      radius_km=payload.maxRadiusKm,
+      resolution_m=payload.resolutionM,
+    )
   timings["dem_version_s"] = time.perf_counter() - request_start
   cache_key = make_cache_key(
     observer_lat=payload.observer.lat,
@@ -214,6 +275,7 @@ def compute_viewshed_endpoint(
     resolution_m=payload.resolutionM,
     dem_version=dem_version,
     algorithm=mode,
+    considered_bounds=considered_bounds,
   )
   cached = load_cached_viewshed(cache_key)
   if cached is not None:
@@ -222,6 +284,8 @@ def compute_viewshed_endpoint(
       "boundsLatLon": cached.overlay_bounds_latlon,
     }
     estimate = {
+      "gridWidth": grid_width,
+      "gridHeight": grid_height,
       "gridSide": grid_side,
       "cellCount": cell_count,
       "cacheHit": True,
@@ -239,12 +303,21 @@ def compute_viewshed_endpoint(
 
   dem_start = time.perf_counter()
   try:
-    dem_result = get_dem(
-      observer_lat=payload.observer.lat,
-      observer_lon=payload.observer.lon,
-      radius_km=payload.maxRadiusKm,
-      resolution_m=payload.resolutionM,
-    )
+    if payload.consideredBounds:
+      dem_result = get_dem_for_bbox(
+        min_lat=min_lat,
+        min_lon=min_lon,
+        max_lat=max_lat,
+        max_lon=max_lon,
+        resolution_m=payload.resolutionM,
+      )
+    else:
+      dem_result = get_dem(
+        observer_lat=payload.observer.lat,
+        observer_lon=payload.observer.lon,
+        radius_km=payload.maxRadiusKm,
+        resolution_m=payload.resolutionM,
+      )
   except Exception as exc:  # pragma: no cover - provider errors vary by environment
     raise HTTPException(status_code=502, detail=f"DEM provider error: {exc}") from exc
   timings["dem_fetch_s"] = time.perf_counter() - dem_start
@@ -290,6 +363,17 @@ def compute_viewshed_endpoint(
     visibility = smooth_visibility_mask(visibility, passes=1, threshold=3)
   else:
     visibility = smooth_visibility_mask(visibility, passes=2, threshold=7)
+
+  if payload.consideredBounds:
+    visibility = _apply_considered_bounds(
+      visibility,
+      payload.consideredBounds,
+      dem_result.transform,
+      dem_result.crs,
+      (observer_row, observer_col),
+      cell_size_m,
+      payload.maxRadiusKm,
+    )
   timings["viewshed_compute_s"] = time.perf_counter() - compute_start
 
   encode_start = time.perf_counter()
@@ -317,12 +401,15 @@ def compute_viewshed_endpoint(
       "maxRadiusKm": payload.maxRadiusKm,
       "resolutionM": payload.resolutionM,
       "mode": mode,
+      "consideredBounds": considered_bounds,
     },
     dem_version=dem_version,
   )
   timings["cache_store_s"] = time.perf_counter() - cache_start
   timings["total_s"] = time.perf_counter() - request_start
   estimate = {
+    "gridWidth": grid_width,
+    "gridHeight": grid_height,
     "gridSide": grid_side,
     "cellCount": cell_count,
     "cacheHit": False,
@@ -396,7 +483,8 @@ def compute_multi_viewshed_endpoint(
     raise HTTPException(status_code=400, detail=f"Limit observers to {MAX_OBSERVERS} points.")
 
   radius_m = payload.maxRadiusKm * 1000.0
-  bounds_m = _bounds_from_observers_meters(observers, radius_m)
+  considered_bounds = _bounds_to_dict(payload.consideredBounds)
+  bounds_m = _bounds_from_observers_meters(observers, radius_m, payload.consideredBounds)
   grid_width, grid_height, grid_side, cell_count = _estimate_grid_for_bounds(bounds_m, payload.resolutionM)
   warnings: list[str] = []
 
@@ -433,6 +521,7 @@ def compute_multi_viewshed_endpoint(
     resolution_m=payload.resolutionM,
     dem_version=dem_version,
     algorithm=mode,
+    considered_bounds=considered_bounds,
   )
   cached = load_cached_viewshed(cache_key)
   estimate = {
@@ -515,7 +604,7 @@ def compute_multi_viewshed_endpoint(
         initializer=_init_shared_dem,
         initargs=(shm.name, dem.shape, str(dem.dtype)),
       ) as executor:
-        futures = [
+        future_map = {
           executor.submit(
             _compute_visibility_shared,
             observer_rc,
@@ -524,12 +613,23 @@ def compute_multi_viewshed_endpoint(
             mode,
             smooth_passes,
             smooth_threshold,
-          )
+          ): observer_rc
           for observer_rc in observer_pixels
-        ]
-        for future in futures:
+        }
+        for future, observer_rc in future_map.items():
           try:
-            counts += future.result().astype(np.uint16)
+            visibility = future.result().astype(bool)
+            if payload.consideredBounds:
+              visibility = _apply_considered_bounds(
+                visibility,
+                payload.consideredBounds,
+                dem_result.transform,
+                dem_result.crs,
+                observer_rc,
+                cell_size_m,
+                payload.maxRadiusKm,
+              )
+            counts += visibility.astype(np.uint16)
           except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
@@ -556,6 +656,16 @@ def compute_multi_viewshed_endpoint(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
       visibility = smooth_visibility_mask(visibility, passes=smooth_passes, threshold=smooth_threshold)
+      if payload.consideredBounds:
+        visibility = _apply_considered_bounds(
+          visibility,
+          payload.consideredBounds,
+          dem_result.transform,
+          dem_result.crs,
+          observer_rc,
+          cell_size_m,
+          payload.maxRadiusKm,
+        )
       counts += visibility.astype(np.uint16)
 
   timings["viewshed_compute_s"] = time.perf_counter() - compute_start
@@ -588,6 +698,7 @@ def compute_multi_viewshed_endpoint(
       "maxRadiusKm": payload.maxRadiusKm,
       "resolutionM": payload.resolutionM,
       "mode": mode,
+      "consideredBounds": considered_bounds,
     },
     dem_version=dem_version,
   )
@@ -617,9 +728,92 @@ def _normalize_observers(observers: list[Observer]) -> list[Observer]:
   return unique
 
 
+def _bounds_to_dict(bounds: BoundsLatLon | None) -> dict[str, float] | None:
+  if bounds is None:
+    return None
+  return {
+    "minLat": float(bounds.minLat),
+    "minLon": float(bounds.minLon),
+    "maxLat": float(bounds.maxLat),
+    "maxLon": float(bounds.maxLon),
+  }
+
+
+def _apply_considered_bounds(
+  mask: np.ndarray,
+  bounds: BoundsLatLon,
+  transform,
+  crs: str,
+  observer_rc: tuple[int, int],
+  cell_size_m: float,
+  max_radius_km: float,
+) -> np.ndarray:
+  bounds_mask = _mask_for_bounds(mask.shape, bounds, transform, crs)
+  if max_radius_km > 0:
+    radius_mask = _mask_for_radius(mask.shape, observer_rc, cell_size_m, max_radius_km)
+    bounds_mask &= radius_mask
+  return mask & bounds_mask
+
+
+def _mask_for_bounds(
+  shape: tuple[int, int],
+  bounds: BoundsLatLon,
+  transform,
+  crs: str,
+) -> np.ndarray:
+  rows, cols = shape
+  transformer = Transformer.from_crs("EPSG:4326", CRS.from_user_input(crs), always_xy=True)
+  corners = [
+    (bounds.minLon, bounds.minLat),
+    (bounds.minLon, bounds.maxLat),
+    (bounds.maxLon, bounds.minLat),
+    (bounds.maxLon, bounds.maxLat),
+  ]
+  xs: list[float] = []
+  ys: list[float] = []
+  for lon, lat in corners:
+    x, y = transformer.transform(lon, lat)
+    xs.append(x)
+    ys.append(y)
+
+  inv = ~transform
+  pixel_coords = [inv * (x, y) for x, y in zip(xs, ys)]
+  cols_f = [coord[0] for coord in pixel_coords]
+  rows_f = [coord[1] for coord in pixel_coords]
+
+  min_row = max(0, int(math.floor(min(rows_f))))
+  max_row = min(rows - 1, int(math.ceil(max(rows_f))))
+  min_col = max(0, int(math.floor(min(cols_f))))
+  max_col = min(cols - 1, int(math.ceil(max(cols_f))))
+
+  bounds_mask = np.zeros((rows, cols), dtype=bool)
+  if min_row > max_row or min_col > max_col:
+    return bounds_mask
+
+  bounds_mask[min_row : max_row + 1, min_col : max_col + 1] = True
+  return bounds_mask
+
+
+def _mask_for_radius(
+  shape: tuple[int, int],
+  observer_rc: tuple[int, int],
+  cell_size_m: float,
+  max_radius_km: float,
+) -> np.ndarray:
+  rows, cols = shape
+  radius_m = max_radius_km * 1000.0
+  obs_r, obs_c = observer_rc
+  row_idx, col_idx = np.ogrid[:rows, :cols]
+  dr = (row_idx - obs_r) * cell_size_m
+  dc = (col_idx - obs_c) * cell_size_m
+  dist_sq = dr * dr + dc * dc
+  return dist_sq <= radius_m * radius_m
+
+
 def _bounds_from_observers_meters(
   observers: list[Observer],
   radius_m: float,
+  considered_bounds: BoundsLatLon | None = None,
 ) -> tuple[float, float, float, float]:
   transformer = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
   min_x = math.inf
@@ -627,12 +821,32 @@ def _bounds_from_observers_meters(
   max_x = -math.inf
   max_y = -math.inf
 
+  if considered_bounds:
+    bounds_corners = [
+      (considered_bounds.minLon, considered_bounds.minLat),
+      (considered_bounds.minLon, considered_bounds.maxLat),
+      (considered_bounds.maxLon, considered_bounds.minLat),
+      (considered_bounds.maxLon, considered_bounds.maxLat),
+    ]
+    for lon, lat in bounds_corners:
+      x, y = transformer.transform(lon, lat)
+      min_x = min(min_x, x)
+      min_y = min(min_y, y)
+      max_x = max(max_x, x)
+      max_y = max(max_y, y)
+
   for obs in observers:
     x, y = transformer.transform(obs.lon, obs.lat)
-    min_x = min(min_x, x - radius_m)
-    min_y = min(min_y, y - radius_m)
-    max_x = max(max_x, x + radius_m)
-    max_y = max(max_y, y + radius_m)
+    if considered_bounds:
+      min_x = min(min_x, x)
+      min_y = min(min_y, y)
+      max_x = max(max_x, x)
+      max_y = max(max_y, y)
+    else:
+      min_x = min(min_x, x - radius_m)
+      min_y = min(min_y, y - radius_m)
+      max_x = max(max_x, x + radius_m)
+      max_y = max(max_y, y + radius_m)
 
   return (min_x, min_y, max_x, max_y)
 

@@ -34,6 +34,7 @@ def make_cache_key(
   resolution_m: float,
   dem_version: str,
   algorithm: str = "accurate",
+  considered_bounds: dict[str, float] | None = None,
 ) -> str:
   payload = {
     "cacheVersion": CACHE_VERSION,
@@ -49,6 +50,8 @@ def make_cache_key(
       "mode": algorithm,
     },
   }
+  if considered_bounds:
+    payload["request"]["consideredBounds"] = considered_bounds
 
   encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
   return hashlib.sha256(encoded).hexdigest()
@@ -61,6 +64,7 @@ def make_cache_key_multi(
   resolution_m: float,
   dem_version: str,
   algorithm: str = "accurate",
+  considered_bounds: dict[str, float] | None = None,
 ) -> str:
   sorted_observers = sorted(observers, key=lambda item: (item["lat"], item["lon"]))
   payload = {
@@ -76,6 +80,8 @@ def make_cache_key_multi(
       "mode": algorithm,
     },
   }
+  if considered_bounds:
+    payload["request"]["consideredBounds"] = considered_bounds
 
   encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
   return hashlib.sha256(encoded).hexdigest()
