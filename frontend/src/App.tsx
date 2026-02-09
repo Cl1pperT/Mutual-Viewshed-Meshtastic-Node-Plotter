@@ -197,6 +197,7 @@ export default function App() {
   const [scenarios, setScenarios] = useState<ScenarioItem[]>([]);
   const [isScenarioSaving, setIsScenarioSaving] = useState(false);
   const [isScenarioLoading, setIsScenarioLoading] = useState(false);
+  const [isScenarioCollapsed, setIsScenarioCollapsed] = useState(true);
 
   const matchedPreset = useMemo(() => {
     return (
@@ -1331,47 +1332,11 @@ export default function App() {
             ) : (
               <div className="status">Select a point on the map to set the observer.</div>
             )}
-            <div className="scenarios">
-              <div className="scenarios__header">
-                <h3>Saved Scenarios</h3>
-                <button
-                  className="btn btn--ghost"
-                  type="button"
-                  onClick={fetchScenarios}
-                  disabled={isScenarioLoading}
-                >
-                  {isScenarioLoading ? 'Refreshing…' : 'Refresh'}
-                </button>
-              </div>
-              {scenarios.length === 0 ? (
-                <div className="status">No saved scenarios yet.</div>
-              ) : (
-                <ul className="scenarios__list">
-                  {scenarios.map((item) => (
-                    <li key={item.id} className="scenarios__item">
-                      <button className="scenarios__button" type="button" onClick={() => handleLoadScenario(item)}>
-                        <div className="scenarios__title">{item.name}</div>
-                        <div className="scenarios__meta">
-                          {new Date(item.createdAt).toLocaleString()}
-                        </div>
-                      </button>
-                      <button
-                        className="scenarios__delete"
-                        type="button"
-                        onClick={() => handleDeleteScenario(item)}
-                      >
-                        Delete
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
           </aside>
         </div>
       </section>
 
-      <section className="panel">
+      <section className="panel panel--columns">
         <div className="history">
           <div className="history__header">
             <h2>Recent Viewsheds</h2>
@@ -1435,6 +1400,53 @@ export default function App() {
                       </li>
                     );
                   })}
+                </ul>
+              )}
+            </>
+          ) : null}
+        </div>
+        <div className="history scenarios-panel">
+          <div className="history__header">
+            <h2>Saved Viewsheds</h2>
+            <div className="history__actions">
+              <button
+                className="btn btn--ghost"
+                type="button"
+                onClick={() => setIsScenarioCollapsed((current) => !current)}
+              >
+                {isScenarioCollapsed ? 'Show' : 'Hide'}
+              </button>
+              <button
+                className="btn btn--ghost"
+                type="button"
+                onClick={fetchScenarios}
+                disabled={isScenarioLoading}
+              >
+                {isScenarioLoading ? 'Refreshing...' : 'Refresh'}
+              </button>
+            </div>
+          </div>
+          {!isScenarioCollapsed ? (
+            <>
+              {scenarios.length === 0 ? (
+                <div className="status">No saved scenarios yet.</div>
+              ) : (
+                <ul className="scenarios__list">
+                  {scenarios.map((item) => (
+                    <li key={item.id} className="scenarios__item">
+                      <button className="scenarios__button" type="button" onClick={() => handleLoadScenario(item)}>
+                        <div className="scenarios__title">{item.name}</div>
+                        <div className="scenarios__meta">{new Date(item.createdAt).toLocaleString()}</div>
+                      </button>
+                      <button
+                        className="scenarios__delete"
+                        type="button"
+                        onClick={() => handleDeleteScenario(item)}
+                      >
+                        Delete
+                      </button>
+                    </li>
+                  ))}
                 </ul>
               )}
             </>

@@ -93,6 +93,10 @@ body {
   display: block;
 }
 
+.panel--columns {
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
 .form-layout {
   display: grid;
   grid-template-columns: minmax(320px, 2fr) minmax(240px, 1fr);
