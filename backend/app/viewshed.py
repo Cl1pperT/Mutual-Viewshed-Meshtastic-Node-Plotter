@@ -4,12 +4,15 @@ import math
 
 import numpy as np
 
+EARTH_RADIUS_M = 6_371_000.0
+
 
 def compute_viewshed(
   dem: np.ndarray,
   observer_rc: tuple[int, int],
   observer_height_m: float,
   cell_size_m: float,
+  curvature_enabled: bool = False,
 ) -> np.ndarray:
   """
   Compute a boolean visibility mask for a DEM using a radial sweep / horizon method.
@@ -20,7 +23,7 @@ def compute_viewshed(
   cell_size_m: square cell size (meters)
   """
 
-  return _compute_viewshed_baseline(dem, observer_rc, observer_height_m, cell_size_m)
+  return _compute_viewshed_baseline(dem, observer_rc, observer_height_m, cell_size_m, curvature_enabled)
 
 
 def compute_viewshed_radial(
@@ -28,12 +31,13 @@ def compute_viewshed_radial(
   observer_rc: tuple[int, int],
   observer_height_m: float,
   cell_size_m: float,
+  curvature_enabled: bool = False,
 ) -> np.ndarray:
   """
   Compute a visibility mask using a radial sweep / horizon method (faster, less accurate).
   """
 
-  return _compute_viewshed_radial(dem, observer_rc, observer_height_m, cell_size_m)
+  return _compute_viewshed_radial(dem, observer_rc, observer_height_m, cell_size_m, curvature_enabled)
 
 
 def smooth_visibility_mask(mask: np.ndarray, passes: int = 1, threshold: int | None = None) -> np.ndarray:
@@ -71,13 +75,14 @@ def compute_viewshed_baseline(
   observer_rc: tuple[int, int],
   observer_height_m: float,
   cell_size_m: float,
+  curvature_enabled: bool = False,
 ) -> np.ndarray:
   """
   Baseline (slow) line-of-sight sampling implementation.
   Kept for correctness checks and benchmarking.
   """
 
-  return _compute_viewshed_baseline(dem, observer_rc, observer_height_m, cell_size_m)
+  return _compute_viewshed_baseline(dem, observer_rc, observer_height_m, cell_size_m, curvature_enabled)
 
 
 def _compute_viewshed_radial(
@@ -85,6 +90,7 @@ def _compute_viewshed_radial(
   observer_rc: tuple[int, int],
   observer_height_m: float,
   cell_size_m: float,
+  curvature_enabled: bool = False,
 ) -> np.ndarray:
   _validate_inputs(dem, observer_rc, observer_height_m, cell_size_m)
 
@@ -116,7 +122,10 @@ def _compute_viewshed_radial(
       direction = (dr // g, dc // g)
 
       distance = math.hypot(dr, dc) * cell_size_m
-      angle = math.atan2(target - observer_elevation, distance)
+      target_effective = target
+      if curvature_enabled and distance > 0:
+        target_effective = target - _curvature_drop(distance)
+      angle = math.atan2(target_effective - observer_elevation, distance)
 
       rays.setdefault(direction, []).append((g, r, c, angle))
 
@@ -138,6 +147,7 @@ def _compute_viewshed_baseline(
   observer_rc: tuple[int, int],
   observer_height_m: float,
   cell_size_m: float,
+  curvature_enabled: bool = False,
 ) -> np.ndarray:
   _validate_inputs(dem, observer_rc, observer_height_m, cell_size_m)
 
@@ -166,6 +176,7 @@ def _compute_viewshed_baseline(
         (obs_r, obs_c),
         (r, c),
         cell_size_m,
+        curvature_enabled,
       ):
         visibility[r, c] = True
 
@@ -198,6 +209,7 @@ def _line_of_sight(
   observer_rc: tuple[int, int],
   target_rc: tuple[int, int],
   cell_size_m: float,
+  curvature_enabled: bool = False,
 ) -> bool:
   obs_r, obs_c = observer_rc
   tgt_r, tgt_c = target_rc
@@ -207,6 +219,11 @@ def _line_of_sight(
   steps = int(max(abs(dr), abs(dc)))
   if steps == 0:
     return True
+
+  total_distance = math.hypot(dr, dc) * cell_size_m
+  target_effective = target_elevation
+  if curvature_enabled and total_distance > 0:
+    target_effective = target_elevation - _curvature_drop(total_distance)
 
   # Sample along the line at grid-cell intervals.
   for step in range(1, steps):
@@ -218,12 +235,18 @@ def _line_of_sight(
     if math.isnan(terrain):
       return False
 
-    # Height of line at this fraction of the distance.
-    expected = observer_elevation + (target_elevation - observer_elevation) * t
+    distance = total_distance * t
+    expected = observer_elevation + (target_effective - observer_elevation) * t
+    if curvature_enabled and distance > 0:
+      terrain = terrain - _curvature_drop(distance)
     if terrain > expected:
       return False
 
   return True
+
+
+def _curvature_drop(distance_m: float) -> float:
+  return (distance_m * distance_m) / (2.0 * EARTH_RADIUS_M)
 
 
 def _bilinear_sample(dem: np.ndarray, row: float, col: float) -> float:

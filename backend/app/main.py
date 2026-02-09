@@ -137,6 +137,7 @@ class ViewshedRequest(BaseModel):
   maxRadiusKm: float = Field(gt=0)
   resolutionM: float = Field(gt=0)
   consideredBounds: BoundsLatLon | None = None
+  curvatureEnabled: bool = False
 
 
 class MultiViewshedRequest(BaseModel):
@@ -145,6 +146,7 @@ class MultiViewshedRequest(BaseModel):
   maxRadiusKm: float = Field(gt=0)
   resolutionM: float = Field(gt=0)
   consideredBounds: BoundsLatLon | None = None
+  curvatureEnabled: bool = False
 
 
 class ScenarioRequest(BaseModel):
@@ -157,6 +159,7 @@ class ScenarioRequest(BaseModel):
   resolutionM: float = Field(gt=0)
   consideredBounds: BoundsLatLon | None = None
   cacheKey: str | None = None
+  curvatureEnabled: bool = False
 
   @model_validator(mode="after")
   def validate_observers(self) -> "ScenarioRequest":
@@ -366,6 +369,7 @@ def compute_viewshed_endpoint(
     dem_version=dem_version,
     algorithm=mode,
     considered_bounds=considered_bounds,
+    curvature_enabled=payload.curvatureEnabled,
   )
   cached = load_cached_viewshed(cache_key)
   if cached is not None:
@@ -439,6 +443,7 @@ def compute_viewshed_endpoint(
         observer_rc=(observer_row, observer_col),
         observer_height_m=payload.observerHeightM,
         cell_size_m=cell_size_m,
+        curvature_enabled=payload.curvatureEnabled,
       )
     else:
       visibility = compute_viewshed_baseline(
@@ -446,6 +451,7 @@ def compute_viewshed_endpoint(
         observer_rc=(observer_row, observer_col),
         observer_height_m=payload.observerHeightM,
         cell_size_m=cell_size_m,
+        curvature_enabled=payload.curvatureEnabled,
       )
   except Exception as exc:
     raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -493,6 +499,7 @@ def compute_viewshed_endpoint(
       "resolutionM": payload.resolutionM,
       "mode": mode,
       "consideredBounds": considered_bounds,
+      "curvatureEnabled": payload.curvatureEnabled,
     },
     dem_version=dem_version,
   )
@@ -535,6 +542,7 @@ def _compute_visibility_shared(
   mode: Literal["fast", "accurate"],
   smooth_passes: int,
   smooth_threshold: int,
+  curvature_enabled: bool,
 ) -> np.ndarray:
   dem = _SHARED_DEM
   if dem is None:
@@ -546,6 +554,7 @@ def _compute_visibility_shared(
       observer_rc=observer_rc,
       observer_height_m=observer_height_m,
       cell_size_m=cell_size_m,
+      curvature_enabled=curvature_enabled,
     )
   else:
     visibility = compute_viewshed_baseline(
@@ -553,6 +562,7 @@ def _compute_visibility_shared(
       observer_rc=observer_rc,
       observer_height_m=observer_height_m,
       cell_size_m=cell_size_m,
+      curvature_enabled=curvature_enabled,
     )
 
   visibility = smooth_visibility_mask(visibility, passes=smooth_passes, threshold=smooth_threshold)
@@ -720,6 +730,7 @@ def _compute_multi_viewshed(
     dem_version=dem_version,
     algorithm=mode,
     considered_bounds=considered_bounds,
+    curvature_enabled=payload.curvatureEnabled,
   )
   cached = load_cached_viewshed(cache_key)
   estimate = {
@@ -814,6 +825,7 @@ def _compute_multi_viewshed(
             mode,
             smooth_passes,
             smooth_threshold,
+            payload.curvatureEnabled,
           ): observer_rc
           for observer_rc in observer_pixels
         }
@@ -848,6 +860,7 @@ def _compute_multi_viewshed(
             observer_rc=observer_rc,
             observer_height_m=payload.observerHeightM,
             cell_size_m=cell_size_m,
+            curvature_enabled=payload.curvatureEnabled,
           )
         else:
           visibility = compute_viewshed_baseline(
@@ -855,6 +868,7 @@ def _compute_multi_viewshed(
             observer_rc=observer_rc,
             observer_height_m=payload.observerHeightM,
             cell_size_m=cell_size_m,
+            curvature_enabled=payload.curvatureEnabled,
           )
       except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -905,6 +919,7 @@ def _compute_multi_viewshed(
       "resolutionM": payload.resolutionM,
       "mode": mode,
       "consideredBounds": considered_bounds,
+      "curvatureEnabled": payload.curvatureEnabled,
     },
     dem_version=dem_version,
   )

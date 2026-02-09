@@ -35,6 +35,7 @@ def make_cache_key(
   dem_version: str,
   algorithm: str = "accurate",
   considered_bounds: dict[str, float] | None = None,
+  curvature_enabled: bool = False,
 ) -> str:
   payload = {
     "cacheVersion": CACHE_VERSION,
@@ -48,6 +49,7 @@ def make_cache_key(
       "maxRadiusKm": float(max_radius_km),
       "resolutionM": float(resolution_m),
       "mode": algorithm,
+      "curvatureEnabled": bool(curvature_enabled),
     },
   }
   if considered_bounds:
@@ -65,6 +67,7 @@ def make_cache_key_multi(
   dem_version: str,
   algorithm: str = "accurate",
   considered_bounds: dict[str, float] | None = None,
+  curvature_enabled: bool = False,
 ) -> str:
   sorted_observers = sorted(observers, key=lambda item: (item["lat"], item["lon"]))
   payload = {
@@ -78,6 +81,7 @@ def make_cache_key_multi(
       "maxRadiusKm": float(max_radius_km),
       "resolutionM": float(resolution_m),
       "mode": algorithm,
+      "curvatureEnabled": bool(curvature_enabled),
     },
   }
   if considered_bounds:

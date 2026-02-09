@@ -81,6 +81,7 @@ type HistoryItem = {
     resolutionM?: number;
     mode?: ComputeMode;
     consideredBounds?: ConsideredBounds;
+    curvatureEnabled?: boolean;
   } | null;
   boundsLatLon?: [number, number, number, number] | null;
 };
@@ -101,6 +102,7 @@ type ScenarioRequest = {
   resolutionM: number;
   consideredBounds?: ConsideredBounds | null;
   cacheKey?: string | null;
+  curvatureEnabled?: boolean;
 };
 
 type ScenarioItem = {
@@ -188,6 +190,7 @@ export default function App() {
   const [isHistoryLoading, setIsHistoryLoading] = useState(false);
   const [isHistoryCollapsed, setIsHistoryCollapsed] = useState(true);
   const [computeMode, setComputeMode] = useState<ComputeMode>('accurate');
+  const [curvatureEnabled, setCurvatureEnabled] = useState(false);
   const progressPollRef = useRef<number | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchStatus, setSearchStatus] = useState<string | null>(null);
@@ -240,6 +243,7 @@ export default function App() {
         observerHeightM: Number(params.observerHeightMeters),
         maxRadiusKm: Number(params.maxRadiusKm),
         resolutionM: Number(params.resolutionMeters),
+        curvatureEnabled,
       };
       if (consideredBounds) {
         payload.consideredBounds = consideredBounds;
@@ -256,12 +260,13 @@ export default function App() {
       observerHeightM: Number(params.observerHeightMeters),
       maxRadiusKm: Number(params.maxRadiusKm),
       resolutionM: Number(params.resolutionMeters),
+      curvatureEnabled,
     };
     if (consideredBounds) {
       payload.consideredBounds = consideredBounds;
     }
     return payload;
-  }, [consideredBounds, isMultiMode, observerForApi, observersForApi, params]);
+  }, [consideredBounds, curvatureEnabled, isMultiMode, observerForApi, observersForApi, params]);
 
   const estimate = useMemo(() => {
     const radiusKm = Number(params.maxRadiusKm);
@@ -641,6 +646,9 @@ export default function App() {
           if (request.mode === 'fast' || request.mode === 'accurate') {
             setComputeMode(request.mode);
           }
+          if (typeof request.curvatureEnabled === 'boolean') {
+            setCurvatureEnabled(request.curvatureEnabled);
+          }
           if (request.consideredBounds) {
             setConsideredBounds(request.consideredBounds);
           } else {
@@ -735,6 +743,7 @@ export default function App() {
         resolutionM: resolution,
         consideredBounds: consideredBounds ?? null,
         cacheKey: lastCacheKey ?? null,
+        curvatureEnabled,
       };
     }
     if (!observer) {
@@ -749,6 +758,7 @@ export default function App() {
       resolutionM: resolution,
       consideredBounds: consideredBounds ?? null,
       cacheKey: lastCacheKey ?? null,
+      curvatureEnabled,
     };
   };
 
@@ -818,6 +828,7 @@ export default function App() {
     });
     setComputeMode(request.mode);
     setConsideredBounds(request.consideredBounds ?? null);
+    setCurvatureEnabled(Boolean(request.curvatureEnabled));
     setAreaDraft(null);
     setMapTool('observer');
     if (request.cacheKey) {
@@ -1150,6 +1161,25 @@ export default function App() {
                 onClick={() => setComputeMode('fast')}
               >
                 Fast
+              </button>
+            </div>
+          </div>
+          <div className="form__group form__group--full">
+            <label>Earth Curvature</label>
+            <div className="presets">
+              <button
+                type="button"
+                className={`preset-btn${!curvatureEnabled ? ' preset-btn--active' : ''}`}
+                onClick={() => setCurvatureEnabled(false)}
+              >
+                Off
+              </button>
+              <button
+                type="button"
+                className={`preset-btn${curvatureEnabled ? ' preset-btn--active' : ''}`}
+                onClick={() => setCurvatureEnabled(true)}
+              >
+                On
               </button>
             </div>
           </div>
