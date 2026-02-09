@@ -85,6 +85,31 @@ type HistoryItem = {
   boundsLatLon?: [number, number, number, number] | null;
 };
 
+type ScenarioRequest = {
+  mapType: 'single' | 'complex';
+  mode: ComputeMode;
+  observer?: {
+    lat: number;
+    lon: number;
+  } | null;
+  observers?: {
+    lat: number;
+    lon: number;
+  }[] | null;
+  observerHeightM: number;
+  maxRadiusKm: number;
+  resolutionM: number;
+  consideredBounds?: ConsideredBounds | null;
+  cacheKey?: string | null;
+};
+
+type ScenarioItem = {
+  id: string;
+  name: string;
+  createdAt: string;
+  request: ScenarioRequest;
+};
+
 type Preset = {
   id: string;
   label: string;
@@ -156,6 +181,7 @@ export default function App() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [overlay, setOverlay] = useState<OverlayPayload | null>(null);
+  const [lastCacheKey, setLastCacheKey] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ completed: number; total: number } | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -166,6 +192,11 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchStatus, setSearchStatus] = useState<string | null>(null);
   const [isSearching, setIsSearching] = useState(false);
+  const [scenarioName, setScenarioName] = useState('');
+  const [scenarioStatus, setScenarioStatus] = useState<string | null>(null);
+  const [scenarios, setScenarios] = useState<ScenarioItem[]>([]);
+  const [isScenarioSaving, setIsScenarioSaving] = useState(false);
+  const [isScenarioLoading, setIsScenarioLoading] = useState(false);
 
   const matchedPreset = useMemo(() => {
     return (
@@ -548,6 +579,28 @@ export default function App() {
       });
   };
 
+  const fetchScenarios = () => {
+    setIsScenarioLoading(true);
+    setScenarioStatus(null);
+    fetch(`${API_BASE_URL}/scenarios`)
+      .then(async (response) => {
+        if (!response.ok) {
+          const text = await response.text();
+          throw new Error(text || `Scenario request failed with status ${response.status}`);
+        }
+        return response.json();
+      })
+      .then((data) => {
+        setScenarios(Array.isArray(data.items) ? data.items : []);
+      })
+      .catch((error: Error) => {
+        setScenarioStatus(error.message || 'Unable to load scenarios.');
+      })
+      .finally(() => {
+        setIsScenarioLoading(false);
+      });
+  };
+
   const handleLoadHistory = (item: HistoryItem) => {
     setIsSubmitting(true);
     setSubmitError(null);
@@ -563,6 +616,7 @@ export default function App() {
         if (data.overlay) {
           setOverlay(data.overlay);
         }
+        setLastCacheKey(item.cacheKey ?? null);
         const request = data.request ?? item.request;
         if (request?.observers && request.observers.length > 0) {
           const coordsList = request.observers.map((entry) => ({ lat: entry.lat, lng: entry.lon }));
@@ -626,6 +680,191 @@ export default function App() {
       });
   };
 
+  const handleShareOverlay = async () => {
+    if (!overlay) {
+      return;
+    }
+    try {
+      const binary = atob(overlay.pngBase64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i += 1) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      const blob = new Blob([bytes], { type: 'image/png' });
+      const file = new File([blob], 'viewshed-overlay.png', { type: 'image/png' });
+
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({
+          files: [file],
+          title: 'Viewshed Overlay',
+        });
+        return;
+      }
+
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'viewshed-overlay.png';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      setSubmitError('Unable to share overlay.');
+    }
+  };
+
+  const buildScenarioRequest = (): ScenarioRequest | null => {
+    const height = Number(params.observerHeightMeters);
+    const radius = Number(params.maxRadiusKm);
+    const resolution = Number(params.resolutionMeters);
+    if (!Number.isFinite(height) || !Number.isFinite(radius) || !Number.isFinite(resolution)) {
+      return null;
+    }
+    if (isMultiMode) {
+      if (multiObservers.length < 2) {
+        return null;
+      }
+      return {
+        mapType: 'complex',
+        mode: computeMode,
+        observers: multiObservers.map((point) => ({ lat: point.lat, lon: point.lng })),
+        observerHeightM: height,
+        maxRadiusKm: radius,
+        resolutionM: resolution,
+        consideredBounds: consideredBounds ?? null,
+        cacheKey: lastCacheKey ?? null,
+      };
+    }
+    if (!observer) {
+      return null;
+    }
+    return {
+      mapType: 'single',
+      mode: computeMode,
+      observer: { lat: observer.lat, lon: observer.lng },
+      observerHeightM: height,
+      maxRadiusKm: radius,
+      resolutionM: resolution,
+      consideredBounds: consideredBounds ?? null,
+      cacheKey: lastCacheKey ?? null,
+    };
+  };
+
+  const handleSaveScenario = () => {
+    const trimmed = scenarioName.trim();
+    if (!trimmed) {
+      setScenarioStatus('Enter a scenario name.');
+      return;
+    }
+    if (!lastCacheKey) {
+      setScenarioStatus('Compute a viewshed before saving the result.');
+      return;
+    }
+    const request = buildScenarioRequest();
+    if (!request) {
+      setScenarioStatus('Select valid parameters and at least one point before saving.');
+      return;
+    }
+    setScenarioStatus(null);
+    setIsScenarioSaving(true);
+    fetch(`${API_BASE_URL}/scenarios`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ name: trimmed, request }),
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          const text = await response.text();
+          throw new Error(text || `Save failed with status ${response.status}`);
+        }
+        return response.json();
+      })
+      .then((data) => {
+        setScenarios((current) => [data, ...current]);
+        setScenarioName('');
+      })
+      .catch((error: Error) => {
+        setScenarioStatus(error.message || 'Unable to save scenario.');
+      })
+      .finally(() => {
+        setIsScenarioSaving(false);
+      });
+  };
+
+  const handleLoadScenario = (item: ScenarioItem) => {
+    const request = item.request;
+    if (!request) {
+      return;
+    }
+    if (request.mapType === 'complex' && request.observers && request.observers.length > 0) {
+      const coordsList = request.observers.map((entry) => ({ lat: entry.lat, lng: entry.lon }));
+      setIsMultiMode(true);
+      setMultiObservers(coordsList);
+      setMapCenter(coordsList[0]);
+    } else if (request.mapType === 'single' && request.observer) {
+      const coords = { lat: request.observer.lat, lng: request.observer.lon };
+      setIsMultiMode(false);
+      setObserver(coords);
+      setMapCenter(coords);
+    }
+    setParams({
+      observerHeightMeters: String(request.observerHeightM),
+      maxRadiusKm: String(request.maxRadiusKm),
+      resolutionMeters: String(request.resolutionM),
+    });
+    setComputeMode(request.mode);
+    setConsideredBounds(request.consideredBounds ?? null);
+    setAreaDraft(null);
+    setMapTool('observer');
+    if (request.cacheKey) {
+      setIsSubmitting(true);
+      setSubmitError(null);
+      fetch(`${API_BASE_URL}/viewshed/cache/${request.cacheKey}`)
+        .then(async (response) => {
+          if (!response.ok) {
+            const text = await response.text();
+            throw new Error(text || `Load failed with status ${response.status}`);
+          }
+          return response.json();
+        })
+        .then((data) => {
+          if (data.overlay) {
+            setOverlay(data.overlay);
+            setLastCacheKey(request.cacheKey ?? null);
+          }
+        })
+        .catch((error: Error) => {
+          setScenarioStatus(error.message || 'Unable to load scenario overlay.');
+        })
+        .finally(() => {
+          setIsSubmitting(false);
+        });
+    } else {
+      setOverlay(null);
+      setLastCacheKey(null);
+    }
+  };
+
+  const handleDeleteScenario = (item: ScenarioItem) => {
+    fetch(`${API_BASE_URL}/scenarios/${item.id}`, { method: 'DELETE' })
+      .then(async (response) => {
+        if (!response.ok) {
+          const text = await response.text();
+          throw new Error(text || `Delete failed with status ${response.status}`);
+        }
+        return response.json();
+      })
+      .then(() => {
+        setScenarios((current) => current.filter((entry) => entry.id !== item.id));
+      })
+      .catch((error: Error) => {
+        setScenarioStatus(error.message || 'Unable to delete scenario.');
+      });
+  };
+
   const validateParams = (): FieldErrors => {
     const nextErrors: FieldErrors = {};
 
@@ -675,6 +914,7 @@ export default function App() {
     setIsSubmitting(true);
     setSubmitError(null);
     setOverlay(null);
+    setLastCacheKey(null);
     setProgress(null);
 
     if (progressPollRef.current) {
@@ -727,15 +967,20 @@ export default function App() {
                 setProgress(null);
                 return;
               }
-              if (job.status === 'completed') {
-                if (job.result?.overlay) {
-                  setOverlay(job.result.overlay);
-                }
-                if (progressPollRef.current) {
-                  window.clearInterval(progressPollRef.current);
-                  progressPollRef.current = null;
-                }
-                setIsSubmitting(false);
+            if (job.status === 'completed') {
+              if (job.result?.overlay) {
+                setOverlay(job.result.overlay);
+              }
+              if (job.result?.cacheKey) {
+                setLastCacheKey(job.result.cacheKey);
+              } else {
+                setLastCacheKey(null);
+              }
+              if (progressPollRef.current) {
+                window.clearInterval(progressPollRef.current);
+                progressPollRef.current = null;
+              }
+              setIsSubmitting(false);
                 setProgress(null);
                 return;
               }
@@ -779,6 +1024,7 @@ export default function App() {
       })
       .then((data) => {
         setOverlay(data.overlay ?? null);
+        setLastCacheKey(data.cacheKey ?? null);
       })
       .catch((error: Error) => {
         setSubmitError(error.message || 'Unable to compute viewshed.');
@@ -787,8 +1033,6 @@ export default function App() {
         setIsSubmitting(false);
       });
   };
-
-  const observerText = observer ? `${observer.lat.toFixed(6)}, ${observer.lng.toFixed(6)}` : 'Not set';
 
   const markers = isMultiMode ? multiObservers : observer ? [observer] : [];
   const consideredBoundsLatLng = consideredBounds
@@ -801,6 +1045,7 @@ export default function App() {
 
   useEffect(() => {
     fetchHistory();
+    fetchScenarios();
   }, []);
 
   useEffect(() => {
@@ -827,6 +1072,23 @@ export default function App() {
       <section className="panel panel--form">
         <div className="form-layout">
           <form className="form" onSubmit={handleSubmit}>
+          <div className="form__group form__group--full">
+            <label htmlFor="scenarioName">Scenario Name</label>
+            <div className="search">
+              <input
+                id="scenarioName"
+                name="scenarioName"
+                type="text"
+                placeholder="e.g. Logan overview"
+                value={scenarioName}
+                onChange={(event) => setScenarioName(event.target.value)}
+              />
+              <button className="btn btn--ghost" type="button" onClick={handleSaveScenario} disabled={isScenarioSaving}>
+                {isScenarioSaving ? 'Saving…' : 'Save Scenario'}
+              </button>
+            </div>
+            {scenarioStatus ? <div className="status">{scenarioStatus}</div> : null}
+          </div>
           <div className="form__group form__group--full">
             <label htmlFor="locationSearch">Search Address or Coordinates</label>
             <div className="search">
@@ -993,10 +1255,16 @@ export default function App() {
             <button
               className="btn btn--ghost"
               type="button"
-              onClick={() => setOverlay(null)}
+              onClick={() => {
+                setOverlay(null);
+                setLastCacheKey(null);
+              }}
               disabled={!overlay}
             >
               Clear Overlay
+            </button>
+            <button className="btn btn--ghost" type="button" onClick={handleShareOverlay} disabled={!overlay}>
+              Share Overlay
             </button>
           </div>
           {isSubmitting ? (
@@ -1063,6 +1331,42 @@ export default function App() {
             ) : (
               <div className="status">Select a point on the map to set the observer.</div>
             )}
+            <div className="scenarios">
+              <div className="scenarios__header">
+                <h3>Saved Scenarios</h3>
+                <button
+                  className="btn btn--ghost"
+                  type="button"
+                  onClick={fetchScenarios}
+                  disabled={isScenarioLoading}
+                >
+                  {isScenarioLoading ? 'Refreshing…' : 'Refresh'}
+                </button>
+              </div>
+              {scenarios.length === 0 ? (
+                <div className="status">No saved scenarios yet.</div>
+              ) : (
+                <ul className="scenarios__list">
+                  {scenarios.map((item) => (
+                    <li key={item.id} className="scenarios__item">
+                      <button className="scenarios__button" type="button" onClick={() => handleLoadScenario(item)}>
+                        <div className="scenarios__title">{item.name}</div>
+                        <div className="scenarios__meta">
+                          {new Date(item.createdAt).toLocaleString()}
+                        </div>
+                      </button>
+                      <button
+                        className="scenarios__delete"
+                        type="button"
+                        onClick={() => handleDeleteScenario(item)}
+                      >
+                        Delete
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </aside>
         </div>
       </section>

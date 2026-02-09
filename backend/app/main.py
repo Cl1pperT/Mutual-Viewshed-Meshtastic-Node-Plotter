@@ -15,7 +15,7 @@ import numpy as np
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pyproj import CRS, Transformer
 
 from app.cache import (
@@ -26,6 +26,12 @@ from app.cache import (
   store_cached_viewshed,
   list_cached_viewsheds,
   delete_cached_viewshed,
+)
+from app.scenarios import (
+  delete_scenario,
+  get_scenario,
+  list_scenarios,
+  save_scenario,
 )
 from app.dem import get_dem, get_dem_for_bbox, get_dem_version, get_dem_version_for_bbox
 from app.output import RasterOutput, visibility_counts_to_png, visibility_mask_to_png
@@ -141,6 +147,44 @@ class MultiViewshedRequest(BaseModel):
   consideredBounds: BoundsLatLon | None = None
 
 
+class ScenarioRequest(BaseModel):
+  mapType: Literal["single", "complex"]
+  mode: Literal["fast", "accurate"] = "accurate"
+  observer: Observer | None = None
+  observers: list[Observer] | None = None
+  observerHeightM: float = Field(gt=0)
+  maxRadiusKm: float = Field(gt=0)
+  resolutionM: float = Field(gt=0)
+  consideredBounds: BoundsLatLon | None = None
+  cacheKey: str | None = None
+
+  @model_validator(mode="after")
+  def validate_observers(self) -> "ScenarioRequest":
+    if self.mapType == "single":
+      if self.observer is None:
+        raise ValueError("Single scenarios require an observer.")
+    else:
+      if not self.observers or len(self.observers) < 2:
+        raise ValueError("Complex scenarios require at least two observers.")
+    return self
+
+
+class ScenarioCreate(BaseModel):
+  name: str = Field(min_length=1, max_length=80)
+  request: ScenarioRequest
+
+
+class ScenarioItem(BaseModel):
+  id: str
+  name: str
+  createdAt: str
+  request: ScenarioRequest
+
+
+class ScenarioListResponse(BaseModel):
+  items: list[ScenarioItem]
+
+
 class ViewshedResponse(BaseModel):
   observer: Observer
   maxRadiusKm: float
@@ -149,6 +193,7 @@ class ViewshedResponse(BaseModel):
   warnings: list[str]
   estimate: dict[str, Any]
   timings: dict[str, float] | None = None
+  cacheKey: str | None = None
 
 
 class MultiViewshedResponse(BaseModel):
@@ -159,6 +204,7 @@ class MultiViewshedResponse(BaseModel):
   warnings: list[str]
   estimate: dict[str, Any]
   timings: dict[str, float] | None = None
+  cacheKey: str | None = None
 
 
 class ViewshedHistoryItem(BaseModel):
@@ -191,6 +237,33 @@ def health_check() -> dict:
 def viewshed_history(limit: int = Query(50, ge=1, le=500)) -> ViewshedHistoryResponse:
   items = list_cached_viewsheds(limit=limit)
   return ViewshedHistoryResponse(items=items)
+
+
+@app.get("/scenarios", response_model=ScenarioListResponse)
+def get_scenarios() -> ScenarioListResponse:
+  items = list_scenarios()
+  return ScenarioListResponse(items=items)
+
+
+@app.post("/scenarios", response_model=ScenarioItem)
+def create_scenario(payload: ScenarioCreate) -> ScenarioItem:
+  scenario = save_scenario(payload.name, payload.request.model_dump())
+  return ScenarioItem(**scenario)
+
+
+@app.get("/scenarios/{scenario_id}", response_model=ScenarioItem)
+def get_scenario_by_id(scenario_id: str) -> ScenarioItem:
+  scenario = get_scenario(scenario_id)
+  if scenario is None:
+    raise HTTPException(status_code=404, detail="Scenario not found.")
+  return ScenarioItem(**scenario)
+
+
+@app.delete("/scenarios/{scenario_id}")
+def delete_scenario_by_id(scenario_id: str) -> dict[str, Any]:
+  if not delete_scenario(scenario_id):
+    raise HTTPException(status_code=404, detail="Scenario not found.")
+  return {"status": "deleted", "id": scenario_id}
 
 
 @app.get("/viewshed/cache/{cache_key}", response_model=ViewshedCacheResponse)
@@ -316,6 +389,7 @@ def compute_viewshed_endpoint(
       warnings=warnings,
       estimate=estimate,
       timings=timings if debug else None,
+      cacheKey=cache_key,
     )
 
   dem_start = time.perf_counter()
@@ -440,6 +514,7 @@ def compute_viewshed_endpoint(
     warnings=warnings,
     estimate=estimate,
     timings=timings if debug else None,
+    cacheKey=cache_key,
   )
 
 
@@ -671,6 +746,7 @@ def _compute_multi_viewshed(
       warnings=warnings,
       estimate=estimate,
       timings=timings if debug else None,
+      cacheKey=cache_key,
     )
 
   dem_start = time.perf_counter()
@@ -843,6 +919,7 @@ def _compute_multi_viewshed(
     warnings=warnings,
     estimate=estimate,
     timings=timings if debug else None,
+    cacheKey=cache_key,
   )
 
 
