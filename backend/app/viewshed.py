@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import math
+from typing import Callable
 
 import numpy as np
 
 EARTH_RADIUS_M = 6_371_000.0
+
+
+class CancelledError(RuntimeError):
+  pass
 
 
 def compute_viewshed(
@@ -13,6 +18,7 @@ def compute_viewshed(
   observer_height_m: float,
   cell_size_m: float,
   curvature_enabled: bool = False,
+  cancel_check: Callable[[], bool] | None = None,
 ) -> np.ndarray:
   """
   Compute a boolean visibility mask for a DEM using a radial sweep / horizon method.
@@ -23,7 +29,14 @@ def compute_viewshed(
   cell_size_m: square cell size (meters)
   """
 
-  return _compute_viewshed_baseline(dem, observer_rc, observer_height_m, cell_size_m, curvature_enabled)
+  return _compute_viewshed_baseline(
+    dem,
+    observer_rc,
+    observer_height_m,
+    cell_size_m,
+    curvature_enabled,
+    cancel_check,
+  )
 
 
 def compute_viewshed_radial(
@@ -32,12 +45,20 @@ def compute_viewshed_radial(
   observer_height_m: float,
   cell_size_m: float,
   curvature_enabled: bool = False,
+  cancel_check: Callable[[], bool] | None = None,
 ) -> np.ndarray:
   """
   Compute a visibility mask using a radial sweep / horizon method (faster, less accurate).
   """
 
-  return _compute_viewshed_radial(dem, observer_rc, observer_height_m, cell_size_m, curvature_enabled)
+  return _compute_viewshed_radial(
+    dem,
+    observer_rc,
+    observer_height_m,
+    cell_size_m,
+    curvature_enabled,
+    cancel_check,
+  )
 
 
 def smooth_visibility_mask(mask: np.ndarray, passes: int = 1, threshold: int | None = None) -> np.ndarray:
@@ -76,13 +97,21 @@ def compute_viewshed_baseline(
   observer_height_m: float,
   cell_size_m: float,
   curvature_enabled: bool = False,
+  cancel_check: Callable[[], bool] | None = None,
 ) -> np.ndarray:
   """
   Baseline (slow) line-of-sight sampling implementation.
   Kept for correctness checks and benchmarking.
   """
 
-  return _compute_viewshed_baseline(dem, observer_rc, observer_height_m, cell_size_m, curvature_enabled)
+  return _compute_viewshed_baseline(
+    dem,
+    observer_rc,
+    observer_height_m,
+    cell_size_m,
+    curvature_enabled,
+    cancel_check,
+  )
 
 
 def _compute_viewshed_radial(
@@ -91,6 +120,7 @@ def _compute_viewshed_radial(
   observer_height_m: float,
   cell_size_m: float,
   curvature_enabled: bool = False,
+  cancel_check: Callable[[], bool] | None = None,
 ) -> np.ndarray:
   _validate_inputs(dem, observer_rc, observer_height_m, cell_size_m)
 
@@ -107,6 +137,8 @@ def _compute_viewshed_radial(
   rays: dict[tuple[int, int], list[tuple[int, int, int, float]]] = {}
 
   for r in range(rows):
+    if cancel_check and cancel_check():
+      raise CancelledError()
     for c in range(cols):
       if r == obs_r and c == obs_c:
         continue
@@ -131,6 +163,8 @@ def _compute_viewshed_radial(
 
   epsilon = 1e-12
   for entries in rays.values():
+    if cancel_check and cancel_check():
+      raise CancelledError()
     entries.sort(key=lambda item: item[0])
     max_angle = -math.inf
     for _, r, c, angle in entries:
@@ -148,6 +182,7 @@ def _compute_viewshed_baseline(
   observer_height_m: float,
   cell_size_m: float,
   curvature_enabled: bool = False,
+  cancel_check: Callable[[], bool] | None = None,
 ) -> np.ndarray:
   _validate_inputs(dem, observer_rc, observer_height_m, cell_size_m)
 
@@ -163,6 +198,8 @@ def _compute_viewshed_baseline(
   visibility[obs_r, obs_c] = True
 
   for r in range(rows):
+    if cancel_check and cancel_check():
+      raise CancelledError()
     for c in range(cols):
       if r == obs_r and c == obs_c:
         continue
@@ -177,6 +214,7 @@ def _compute_viewshed_baseline(
         (r, c),
         cell_size_m,
         curvature_enabled,
+        cancel_check,
       ):
         visibility[r, c] = True
 
@@ -210,6 +248,7 @@ def _line_of_sight(
   target_rc: tuple[int, int],
   cell_size_m: float,
   curvature_enabled: bool = False,
+  cancel_check: Callable[[], bool] | None = None,
 ) -> bool:
   obs_r, obs_c = observer_rc
   tgt_r, tgt_c = target_rc
@@ -227,6 +266,8 @@ def _line_of_sight(
 
   # Sample along the line at grid-cell intervals.
   for step in range(1, steps):
+    if cancel_check and step % 64 == 0 and cancel_check():
+      raise CancelledError()
     t = step / steps
     r = obs_r + dr * t
     c = obs_c + dc * t

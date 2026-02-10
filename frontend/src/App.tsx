@@ -203,6 +203,7 @@ export default function App() {
   const [lastCacheKey, setLastCacheKey] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ completed: number; total: number } | null>(null);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [activeJobType, setActiveJobType] = useState<'single' | 'multi' | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [isHistoryLoading, setIsHistoryLoading] = useState(false);
@@ -963,6 +964,7 @@ export default function App() {
     setLastCacheKey(null);
     setProgress(null);
     setActiveJobId(null);
+    setActiveJobType(null);
 
     if (progressPollRef.current) {
       window.clearInterval(progressPollRef.current);
@@ -998,6 +1000,7 @@ export default function App() {
             throw new Error('Failed to start viewshed job.');
           }
           setActiveJobId(jobId);
+          setActiveJobType('multi');
           setProgress({ completed: 0, total });
           let polling = false;
           progressPollRef.current = window.setInterval(async () => {
@@ -1021,6 +1024,7 @@ export default function App() {
                 setIsSubmitting(false);
                 setProgress(null);
                 setActiveJobId(null);
+                setActiveJobType(null);
                 return;
               }
               if (job.status === 'canceled') {
@@ -1032,6 +1036,7 @@ export default function App() {
                 setIsSubmitting(false);
                 setProgress(null);
                 setActiveJobId(null);
+                setActiveJobType(null);
                 return;
               }
             if (job.status === 'completed') {
@@ -1050,6 +1055,7 @@ export default function App() {
               setIsSubmitting(false);
               setProgress(null);
               setActiveJobId(null);
+              setActiveJobType(null);
                 return;
               }
               const completed = Number(job.completed ?? 0);
@@ -1065,6 +1071,7 @@ export default function App() {
               setIsSubmitting(false);
               setProgress(null);
               setActiveJobId(null);
+              setActiveJobType(null);
             } finally {
               polling = false;
             }
@@ -1074,15 +1081,17 @@ export default function App() {
           if (error.name === 'AbortError') {
             setSubmitError('Canceled.');
             setIsSubmitting(false);
+            requestAbortRef.current = null;
             return;
           }
           setSubmitError(error.message || 'Unable to compute viewshed.');
           setIsSubmitting(false);
+          requestAbortRef.current = null;
         });
       return;
     }
 
-    fetch(`${API_BASE_URL}/viewshed?mode=${computeMode}`, {
+    fetch(`${API_BASE_URL}/viewshed/jobs?mode=${computeMode}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -1098,17 +1107,91 @@ export default function App() {
         return response.json();
       })
       .then((data) => {
-        setOverlay(data.overlay ?? null);
-        setLastCacheKey(data.cacheKey ?? null);
+        requestAbortRef.current = null;
+        const jobId = data.jobId as string | undefined;
+        if (!jobId) {
+          throw new Error('Failed to start viewshed job.');
+        }
+        setActiveJobId(jobId);
+        setActiveJobType('single');
+        let polling = false;
+        progressPollRef.current = window.setInterval(async () => {
+          if (polling) {
+            return;
+          }
+          polling = true;
+          try {
+            const response = await fetch(`${API_BASE_URL}/viewshed/jobs/${jobId}`);
+            if (!response.ok) {
+              const text = await response.text();
+              throw new Error(text || `Progress request failed with status ${response.status}`);
+            }
+            const job = await response.json();
+            if (job.status === 'failed') {
+              setSubmitError(job.error || 'Unable to compute viewshed.');
+              if (progressPollRef.current) {
+                window.clearInterval(progressPollRef.current);
+                progressPollRef.current = null;
+              }
+              setIsSubmitting(false);
+              setActiveJobId(null);
+              setActiveJobType(null);
+              return;
+            }
+            if (job.status === 'canceled') {
+              setSubmitError(job.error || 'Canceled.');
+              if (progressPollRef.current) {
+                window.clearInterval(progressPollRef.current);
+                progressPollRef.current = null;
+              }
+              setIsSubmitting(false);
+              setActiveJobId(null);
+              setActiveJobType(null);
+              return;
+            }
+            if (job.status === 'completed') {
+              if (job.result?.overlay) {
+                setOverlay(job.result.overlay);
+              } else {
+                setOverlay(null);
+              }
+              if (job.result?.cacheKey) {
+                setLastCacheKey(job.result.cacheKey);
+              } else {
+                setLastCacheKey(null);
+              }
+              if (progressPollRef.current) {
+                window.clearInterval(progressPollRef.current);
+                progressPollRef.current = null;
+              }
+              setIsSubmitting(false);
+              setActiveJobId(null);
+              setActiveJobType(null);
+              return;
+            }
+          } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : 'Unable to compute viewshed.';
+            setSubmitError(message);
+            if (progressPollRef.current) {
+              window.clearInterval(progressPollRef.current);
+              progressPollRef.current = null;
+            }
+            setIsSubmitting(false);
+            setActiveJobId(null);
+            setActiveJobType(null);
+          } finally {
+            polling = false;
+          }
+        }, 600);
       })
       .catch((error: Error) => {
         if (error.name === 'AbortError') {
           setSubmitError('Canceled.');
+          setIsSubmitting(false);
+          requestAbortRef.current = null;
           return;
         }
         setSubmitError(error.message || 'Unable to compute viewshed.');
-      })
-      .finally(() => {
         setIsSubmitting(false);
         requestAbortRef.current = null;
       });
@@ -1126,14 +1209,19 @@ export default function App() {
       window.clearInterval(progressPollRef.current);
       progressPollRef.current = null;
     }
-    if (activeJobId) {
+    if (activeJobId && activeJobType === 'multi') {
       fetch(`${API_BASE_URL}/viewshed/multi/jobs/${activeJobId}/cancel`, { method: 'POST' }).catch(() => {
+        // Best-effort cancel.
+      });
+    } else if (activeJobId && activeJobType === 'single') {
+      fetch(`${API_BASE_URL}/viewshed/jobs/${activeJobId}/cancel`, { method: 'POST' }).catch(() => {
         // Best-effort cancel.
       });
     }
     setIsSubmitting(false);
     setProgress(null);
     setActiveJobId(null);
+    setActiveJobType(null);
     setSubmitError('Canceled.');
   };
 

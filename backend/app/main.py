@@ -36,6 +36,7 @@ from app.scenarios import (
 from app.dem import get_dem, get_dem_for_bbox, get_dem_version, get_dem_version_for_bbox
 from app.output import RasterOutput, visibility_counts_to_png, visibility_mask_to_png
 from app.viewshed import (
+  CancelledError,
   compute_viewshed as compute_viewshed_baseline,
   compute_viewshed_radial,
   smooth_visibility_mask,
@@ -51,16 +52,28 @@ MAX_OBSERVERS = min(8, MAX_PARALLEL_WORKERS)
 
 @dataclass
 class MultiViewshedJob:
-  status: Literal["pending", "running", "completed", "failed"]
+  status: Literal["pending", "running", "completed", "failed", "canceled"]
   total: int
   completed: int = 0
   result: dict[str, Any] | None = None
   error: str | None = None
   updated_at: float = 0.0
+  cancel_requested: bool = False
+
+
+@dataclass
+class ViewshedJob:
+  status: Literal["pending", "running", "completed", "failed", "canceled"]
+  result: dict[str, Any] | None = None
+  error: str | None = None
+  updated_at: float = 0.0
+  cancel_requested: bool = False
 
 
 _MULTI_JOBS: dict[str, MultiViewshedJob] = {}
 _MULTI_JOBS_LOCK = Lock()
+_VIEWSHED_JOBS: dict[str, ViewshedJob] = {}
+_VIEWSHED_JOBS_LOCK = Lock()
 
 app.add_middleware(
   CORSMiddleware,
@@ -303,13 +316,20 @@ def delete_viewshed_cache(cache_key: str) -> dict:
 
 
 @app.post("/viewshed", response_model=ViewshedResponse)
-def compute_viewshed_endpoint(
+def _compute_single_viewshed(
   payload: ViewshedRequest,
-  debug: int = Query(0, ge=0, le=1),
-  mode: Literal["fast", "accurate"] = Query("accurate"),
+  mode: Literal["fast", "accurate"],
+  debug: int,
+  cancel_check: Callable[[], bool] | None = None,
 ) -> ViewshedResponse:
+  def _check_cancel() -> None:
+    if cancel_check and cancel_check():
+      raise CancelledError()
+
   timings: dict[str, float] = {}
   request_start = time.perf_counter()
+
+  _check_cancel()
 
   if payload.consideredBounds:
     bounds_m = _bounds_from_observers_meters([payload.observer], payload.maxRadiusKm * 1000.0, payload.consideredBounds)
@@ -330,6 +350,8 @@ def compute_viewshed_endpoint(
       f"Large request: estimated grid {grid_width}x{grid_height} (~{cell_count:,} cells). "
       "Computation may be slow."
     )
+
+  _check_cancel()
 
   considered_bounds = _bounds_to_dict(payload.consideredBounds)
   if payload.consideredBounds:
@@ -365,6 +387,7 @@ def compute_viewshed_endpoint(
   )
   cached = load_cached_viewshed(cache_key)
   if cached is not None:
+    _check_cancel()
     overlay_payload = {
       "pngBase64": base64.b64encode(cached.png_bytes).decode("ascii"),
       "boundsLatLon": cached.overlay_bounds_latlon,
@@ -409,6 +432,8 @@ def compute_viewshed_endpoint(
     raise HTTPException(status_code=502, detail=f"DEM provider error: {exc}") from exc
   timings["dem_fetch_s"] = time.perf_counter() - dem_start
 
+  _check_cancel()
+
   dem = dem_result.elevation
   if dem.size == 0 or not (dem.shape[0] and dem.shape[1]):
     raise HTTPException(status_code=500, detail="DEM response is empty.")
@@ -436,6 +461,7 @@ def compute_viewshed_endpoint(
         observer_height_m=payload.observerHeightM,
         cell_size_m=cell_size_m,
         curvature_enabled=payload.curvatureEnabled,
+        cancel_check=cancel_check,
       )
     else:
       visibility = compute_viewshed_baseline(
@@ -444,9 +470,14 @@ def compute_viewshed_endpoint(
         observer_height_m=payload.observerHeightM,
         cell_size_m=cell_size_m,
         curvature_enabled=payload.curvatureEnabled,
+        cancel_check=cancel_check,
       )
+  except CancelledError:
+    raise
   except Exception as exc:
     raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+  _check_cancel()
 
   if mode == "accurate":
     visibility = smooth_visibility_mask(visibility, passes=1, threshold=3)
@@ -464,6 +495,8 @@ def compute_viewshed_endpoint(
       payload.maxRadiusKm,
     )
   timings["viewshed_compute_s"] = time.perf_counter() - compute_start
+
+  _check_cancel()
 
   encode_start = time.perf_counter()
   overlay_output = visibility_mask_to_png(
@@ -515,6 +548,135 @@ def compute_viewshed_endpoint(
     timings=timings if debug else None,
     cacheKey=cache_key,
   )
+
+
+@app.post("/viewshed", response_model=ViewshedResponse)
+def compute_viewshed_endpoint(
+  payload: ViewshedRequest,
+  debug: int = Query(0, ge=0, le=1),
+  mode: Literal["fast", "accurate"] = Query("accurate"),
+) -> ViewshedResponse:
+  return _compute_single_viewshed(payload, mode, debug)
+
+
+@app.post("/viewshed/jobs")
+def start_viewshed_job(
+  payload: ViewshedRequest,
+  debug: int = Query(0, ge=0, le=1),
+  mode: Literal["fast", "accurate"] = Query("accurate"),
+) -> dict[str, Any]:
+  job_id = uuid4().hex
+  job = ViewshedJob(status="pending", updated_at=time.time())
+  with _VIEWSHED_JOBS_LOCK:
+    _VIEWSHED_JOBS[job_id] = job
+
+  thread = Thread(
+    target=_run_viewshed_job,
+    args=(job_id, payload, mode, debug),
+    daemon=True,
+  )
+  thread.start()
+
+  return {"jobId": job_id}
+
+
+@app.get("/viewshed/jobs/{job_id}")
+def get_viewshed_job(job_id: str) -> dict[str, Any]:
+  with _VIEWSHED_JOBS_LOCK:
+    job = _VIEWSHED_JOBS.get(job_id)
+  if job is None:
+    raise HTTPException(status_code=404, detail="Viewshed job not found.")
+
+  payload: dict[str, Any] = {
+    "jobId": job_id,
+    "status": job.status,
+  }
+  if job.status in ("failed", "canceled"):
+    payload["error"] = job.error
+  if job.status == "completed":
+    payload["result"] = job.result
+  return payload
+
+
+@app.post("/viewshed/jobs/{job_id}/cancel")
+def cancel_viewshed_job(job_id: str) -> dict[str, Any]:
+  with _VIEWSHED_JOBS_LOCK:
+    job = _VIEWSHED_JOBS.get(job_id)
+    if job is None:
+      raise HTTPException(status_code=404, detail="Viewshed job not found.")
+    if job.status in ("completed", "failed", "canceled"):
+      return {"status": job.status}
+    job.cancel_requested = True
+    job.status = "canceled"
+    job.error = "Canceled."
+    job.updated_at = time.time()
+  return {"status": "canceled"}
+
+
+def _run_viewshed_job(
+  job_id: str,
+  payload: ViewshedRequest,
+  mode: Literal["fast", "accurate"],
+  debug: int,
+) -> None:
+  with _VIEWSHED_JOBS_LOCK:
+    job = _VIEWSHED_JOBS.get(job_id)
+    if job is None:
+      return
+    if job.cancel_requested:
+      job.status = "canceled"
+      job.error = "Canceled."
+      job.updated_at = time.time()
+      return
+    job.status = "running"
+    job.updated_at = time.time()
+
+  def cancel_check() -> bool:
+    with _VIEWSHED_JOBS_LOCK:
+      job_ref = _VIEWSHED_JOBS.get(job_id)
+      if job_ref is None:
+        return True
+      return job_ref.cancel_requested or job_ref.status == "canceled"
+
+  try:
+    result = _compute_single_viewshed(payload, mode, debug, cancel_check)
+    with _VIEWSHED_JOBS_LOCK:
+      job_ref = _VIEWSHED_JOBS.get(job_id)
+      if job_ref is None:
+        return
+      if job_ref.cancel_requested or job_ref.status == "canceled":
+        job_ref.status = "canceled"
+        job_ref.error = "Canceled."
+        job_ref.updated_at = time.time()
+        return
+      job_ref.status = "completed"
+      job_ref.result = result.model_dump()
+      job_ref.updated_at = time.time()
+  except CancelledError:
+    with _VIEWSHED_JOBS_LOCK:
+      job_ref = _VIEWSHED_JOBS.get(job_id)
+      if job_ref is None:
+        return
+      job_ref.status = "canceled"
+      job_ref.error = "Canceled."
+      job_ref.updated_at = time.time()
+  except HTTPException as exc:
+    message = str(exc.detail)
+    with _VIEWSHED_JOBS_LOCK:
+      job_ref = _VIEWSHED_JOBS.get(job_id)
+      if job_ref is None:
+        return
+      job_ref.status = "failed"
+      job_ref.error = message
+      job_ref.updated_at = time.time()
+  except Exception as exc:  # pragma: no cover - unexpected failures
+    with _VIEWSHED_JOBS_LOCK:
+      job_ref = _VIEWSHED_JOBS.get(job_id)
+      if job_ref is None:
+        return
+      job_ref.status = "failed"
+      job_ref.error = str(exc)
+      job_ref.updated_at = time.time()
 
 
 _SHARED_DEM: np.ndarray | None = None
@@ -610,11 +772,26 @@ def get_multi_viewshed_job(job_id: str) -> dict[str, Any]:
     "total": job.total,
     "completed": job.completed,
   }
-  if job.status == "failed":
+  if job.status in ("failed", "canceled"):
     payload["error"] = job.error
   if job.status == "completed":
     payload["result"] = job.result
   return payload
+
+
+@app.post("/viewshed/multi/jobs/{job_id}/cancel")
+def cancel_multi_viewshed_job(job_id: str) -> dict[str, Any]:
+  with _MULTI_JOBS_LOCK:
+    job = _MULTI_JOBS.get(job_id)
+    if job is None:
+      raise HTTPException(status_code=404, detail="Viewshed job not found.")
+    if job.status in ("completed", "failed", "canceled"):
+      return {"status": job.status}
+    job.cancel_requested = True
+    job.status = "canceled"
+    job.error = "Canceled."
+    job.updated_at = time.time()
+  return {"status": "canceled"}
 
 
 def _run_multi_viewshed_job(
@@ -627,6 +804,11 @@ def _run_multi_viewshed_job(
     job = _MULTI_JOBS.get(job_id)
     if job is None:
       return
+    if job.cancel_requested:
+      job.status = "canceled"
+      job.error = "Canceled."
+      job.updated_at = time.time()
+      return
     job.status = "running"
     job.updated_at = time.time()
 
@@ -638,15 +820,35 @@ def _run_multi_viewshed_job(
       job_ref.completed = min(job_ref.total, job_ref.completed + delta)
       job_ref.updated_at = time.time()
 
+  def cancel_check() -> bool:
+    with _MULTI_JOBS_LOCK:
+      job_ref = _MULTI_JOBS.get(job_id)
+      if job_ref is None:
+        return True
+      return job_ref.cancel_requested or job_ref.status == "canceled"
+
   try:
-    result = _compute_multi_viewshed(payload, mode, debug, progress_callback)
+    result = _compute_multi_viewshed(payload, mode, debug, progress_callback, cancel_check)
     with _MULTI_JOBS_LOCK:
       job_ref = _MULTI_JOBS.get(job_id)
       if job_ref is None:
         return
+      if job_ref.cancel_requested or job_ref.status == "canceled":
+        job_ref.status = "canceled"
+        job_ref.error = "Canceled."
+        job_ref.updated_at = time.time()
+        return
       job_ref.status = "completed"
       job_ref.completed = job_ref.total
       job_ref.result = result.model_dump()
+      job_ref.updated_at = time.time()
+  except CancelledError:
+    with _MULTI_JOBS_LOCK:
+      job_ref = _MULTI_JOBS.get(job_id)
+      if job_ref is None:
+        return
+      job_ref.status = "canceled"
+      job_ref.error = "Canceled."
       job_ref.updated_at = time.time()
   except HTTPException as exc:
     message = str(exc.detail)
@@ -672,6 +874,7 @@ def _compute_multi_viewshed(
   mode: Literal["fast", "accurate"],
   debug: int,
   progress_callback: Callable[[int], None] | None = None,
+  cancel_check: Callable[[], bool] | None = None,
 ) -> MultiViewshedResponse:
   timings: dict[str, float] = {}
   request_start = time.perf_counter()
@@ -696,6 +899,9 @@ def _compute_multi_viewshed(
       f"Large request: estimated grid {grid_width}x{grid_height} (~{cell_count:,} cells). "
       "Computation may be slow."
     )
+
+  if cancel_check and cancel_check():
+    raise CancelledError()
 
   min_lat, min_lon, max_lat, max_lon = _bounds_to_latlon(bounds_m)
   dem_version = get_dem_version_for_bbox(
@@ -764,6 +970,9 @@ def _compute_multi_viewshed(
   if not (dem == dem).any():
     raise HTTPException(status_code=502, detail="DEM provider returned no valid data for this area.")
 
+  if cancel_check and cancel_check():
+    raise CancelledError()
+
   observer_pixels: list[tuple[int, int]] = []
   cell_size_m: float | None = None
   for obs in observers:
@@ -788,7 +997,7 @@ def _compute_multi_viewshed(
   counts = np.zeros(dem.shape, dtype=np.uint16)
   smooth_passes = 1 if mode == "accurate" else 2
   smooth_threshold = 3 if mode == "accurate" else 7
-  use_parallel = len(observer_pixels) > 1 and MAX_PARALLEL_WORKERS > 1
+  use_parallel = len(observer_pixels) > 1 and MAX_PARALLEL_WORKERS > 1 and cancel_check is None
 
   if use_parallel:
     shm = shared_memory.SharedMemory(create=True, size=dem.nbytes)
@@ -815,6 +1024,8 @@ def _compute_multi_viewshed(
           for observer_rc in observer_pixels
         }
         for future in as_completed(future_map):
+          if cancel_check and cancel_check():
+            raise CancelledError()
           observer_rc = future_map[future]
           try:
             visibility = future.result().astype(bool)
@@ -838,6 +1049,8 @@ def _compute_multi_viewshed(
       shm.unlink()
   else:
     for observer_rc in observer_pixels:
+      if cancel_check and cancel_check():
+        raise CancelledError()
       try:
         if mode == "fast":
           visibility = compute_viewshed_radial(
@@ -846,6 +1059,7 @@ def _compute_multi_viewshed(
             observer_height_m=payload.observerHeightM,
             cell_size_m=cell_size_m,
             curvature_enabled=payload.curvatureEnabled,
+            cancel_check=cancel_check,
           )
         else:
           visibility = compute_viewshed_baseline(
@@ -854,7 +1068,10 @@ def _compute_multi_viewshed(
             observer_height_m=payload.observerHeightM,
             cell_size_m=cell_size_m,
             curvature_enabled=payload.curvatureEnabled,
+            cancel_check=cancel_check,
           )
+      except CancelledError:
+        raise
       except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
