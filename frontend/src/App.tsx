@@ -146,6 +146,13 @@ const PRESETS: Preset[] = [
     resolutionMeters: '60',
   },
   {
+    id: 'quality',
+    label: 'Quality',
+    observerHeightMeters: '1.7',
+    maxRadiusKm: '20',
+    resolutionMeters: '30',
+  },
+  {
     id: 'medium',
     label: 'Long Range',
     observerHeightMeters: '1.7',
