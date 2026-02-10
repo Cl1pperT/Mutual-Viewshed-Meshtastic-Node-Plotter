@@ -123,7 +123,7 @@ type Preset = {
 const PRESETS: Preset[] = [
   {
     id: 'fast',
-    label: 'Fast',
+    label: 'Default',
     observerHeightMeters: '1.7',
     maxRadiusKm: '10',
     resolutionMeters: '90',
@@ -132,15 +132,8 @@ const PRESETS: Preset[] = [
     id: 'medium',
     label: 'Medium',
     observerHeightMeters: '1.7',
-    maxRadiusKm: '25',
+    maxRadiusKm: '20',
     resolutionMeters: '60',
-  },
-  {
-    id: 'high',
-    label: 'High',
-    observerHeightMeters: '1.7',
-    maxRadiusKm: '50',
-    resolutionMeters: '30',
   },
 ];
 
@@ -185,13 +178,15 @@ export default function App() {
   const [overlay, setOverlay] = useState<OverlayPayload | null>(null);
   const [lastCacheKey, setLastCacheKey] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ completed: number; total: number } | null>(null);
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [isHistoryLoading, setIsHistoryLoading] = useState(false);
   const [isHistoryCollapsed, setIsHistoryCollapsed] = useState(true);
-  const [computeMode, setComputeMode] = useState<ComputeMode>('accurate');
-  const [curvatureEnabled, setCurvatureEnabled] = useState(false);
+  const [computeMode, setComputeMode] = useState<ComputeMode>('fast');
+  const [curvatureEnabled, setCurvatureEnabled] = useState(true);
   const progressPollRef = useRef<number | null>(null);
+  const requestAbortRef = useRef<AbortController | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchStatus, setSearchStatus] = useState<string | null>(null);
   const [isSearching, setIsSearching] = useState(false);
@@ -928,11 +923,17 @@ export default function App() {
     setOverlay(null);
     setLastCacheKey(null);
     setProgress(null);
+    setActiveJobId(null);
 
     if (progressPollRef.current) {
       window.clearInterval(progressPollRef.current);
       progressPollRef.current = null;
     }
+    if (requestAbortRef.current) {
+      requestAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    requestAbortRef.current = controller;
 
     if (isMultiMode) {
       fetch(`${API_BASE_URL}/viewshed/multi/jobs?mode=${computeMode}`, {
@@ -941,6 +942,7 @@ export default function App() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(payloadPreview),
+        signal: controller.signal,
       })
         .then(async (response) => {
           if (!response.ok) {
@@ -950,11 +952,13 @@ export default function App() {
           return response.json();
         })
         .then((data) => {
+          requestAbortRef.current = null;
           const jobId = data.jobId as string | undefined;
           const total = Number(data.total ?? multiObservers.length);
           if (!jobId) {
             throw new Error('Failed to start viewshed job.');
           }
+          setActiveJobId(jobId);
           setProgress({ completed: 0, total });
           let polling = false;
           progressPollRef.current = window.setInterval(async () => {
@@ -977,6 +981,18 @@ export default function App() {
                 }
                 setIsSubmitting(false);
                 setProgress(null);
+                setActiveJobId(null);
+                return;
+              }
+              if (job.status === 'canceled') {
+                setSubmitError(job.error || 'Canceled.');
+                if (progressPollRef.current) {
+                  window.clearInterval(progressPollRef.current);
+                  progressPollRef.current = null;
+                }
+                setIsSubmitting(false);
+                setProgress(null);
+                setActiveJobId(null);
                 return;
               }
             if (job.status === 'completed') {
@@ -993,7 +1009,8 @@ export default function App() {
                 progressPollRef.current = null;
               }
               setIsSubmitting(false);
-                setProgress(null);
+              setProgress(null);
+              setActiveJobId(null);
                 return;
               }
               const completed = Number(job.completed ?? 0);
@@ -1008,12 +1025,18 @@ export default function App() {
               }
               setIsSubmitting(false);
               setProgress(null);
+              setActiveJobId(null);
             } finally {
               polling = false;
             }
           }, 600);
         })
         .catch((error: Error) => {
+          if (error.name === 'AbortError') {
+            setSubmitError('Canceled.');
+            setIsSubmitting(false);
+            return;
+          }
           setSubmitError(error.message || 'Unable to compute viewshed.');
           setIsSubmitting(false);
         });
@@ -1026,6 +1049,7 @@ export default function App() {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(payloadPreview),
+      signal: controller.signal,
     })
       .then(async (response) => {
         if (!response.ok) {
@@ -1039,11 +1063,39 @@ export default function App() {
         setLastCacheKey(data.cacheKey ?? null);
       })
       .catch((error: Error) => {
+        if (error.name === 'AbortError') {
+          setSubmitError('Canceled.');
+          return;
+        }
         setSubmitError(error.message || 'Unable to compute viewshed.');
       })
       .finally(() => {
         setIsSubmitting(false);
+        requestAbortRef.current = null;
       });
+  };
+
+  const handleCancel = () => {
+    if (!isSubmitting) {
+      return;
+    }
+    if (requestAbortRef.current) {
+      requestAbortRef.current.abort();
+      requestAbortRef.current = null;
+    }
+    if (progressPollRef.current) {
+      window.clearInterval(progressPollRef.current);
+      progressPollRef.current = null;
+    }
+    if (activeJobId) {
+      fetch(`${API_BASE_URL}/viewshed/multi/jobs/${activeJobId}/cancel`, { method: 'POST' }).catch(() => {
+        // Best-effort cancel.
+      });
+    }
+    setIsSubmitting(false);
+    setProgress(null);
+    setActiveJobId(null);
+    setSubmitError('Canceled.');
   };
 
   const markers = isMultiMode ? multiObservers : observer ? [observer] : [];
@@ -1146,21 +1198,21 @@ export default function App() {
             {areaDraft ? <div className="warning">Click the opposite corner to finish the square.</div> : null}
           </div>
           <div className="form__group form__group--full">
-            <label>Mode</label>
+            <label>Calculation Method</label>
             <div className="presets">
-              <button
-                type="button"
-                className={`preset-btn${computeMode === 'accurate' ? ' preset-btn--active' : ''}`}
-                onClick={() => setComputeMode('accurate')}
-              >
-                Accurate
-              </button>
               <button
                 type="button"
                 className={`preset-btn${computeMode === 'fast' ? ' preset-btn--active' : ''}`}
                 onClick={() => setComputeMode('fast')}
               >
-                Fast
+                Default
+              </button>
+              <button
+                type="button"
+                className={`preset-btn${computeMode === 'accurate' ? ' preset-btn--active' : ''}`}
+                onClick={() => setComputeMode('accurate')}
+              >
+                Advanced
               </button>
             </div>
           </div>
@@ -1242,6 +1294,9 @@ export default function App() {
           <div className="form__actions">
             <button className="btn" type="submit" disabled={isSubmitting || guardrail.blocked}>
               {isSubmitting ? 'Submitting...' : isMultiMode ? 'Compute Complex Map' : 'Compute Viewshed'}
+            </button>
+            <button className="btn btn--ghost" type="button" onClick={handleCancel} disabled={!isSubmitting}>
+              Cancel
             </button>
             <button
               className="btn btn--ghost"
@@ -1399,7 +1454,7 @@ export default function App() {
                               : 'Unknown params'}
                           </div>
                           {mode ? (
-                            <div className="history__meta">{mode === 'fast' ? 'Fast' : 'Accurate'}</div>
+                            <div className="history__meta">{mode === 'fast' ? 'Default' : 'Advanced'}</div>
                           ) : null}
                         </button>
                         <button
