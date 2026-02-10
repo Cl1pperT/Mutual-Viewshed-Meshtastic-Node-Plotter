@@ -53,6 +53,13 @@ const formatDuration = (seconds: number) => {
   return `${(seconds / 3600).toFixed(1)} hr`;
 };
 
+const formatAreaKm2 = (value: number) => {
+  if (!Number.isFinite(value)) {
+    return '—';
+  }
+  return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+};
+
 type ObserverState = {
   lat: number;
   lng: number;
@@ -76,6 +83,17 @@ type FieldErrors = Partial<Record<keyof ParamsState | 'observer' | 'observers' |
 type OverlayPayload = {
   pngBase64: string;
   boundsLatLon: [number, number, number, number];
+};
+
+type AreaSummary = {
+  cellAreaM2: number;
+  visibleCells: number;
+  visibleKm2: number;
+  totalCells: number;
+  mutualVisibleCells?: number;
+  mutualVisibleKm2?: number;
+  completeVisibleCells?: number;
+  completeVisibleKm2?: number;
 };
 
 type ComputeMode = 'accurate' | 'fast';
@@ -200,6 +218,7 @@ export default function App() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [overlay, setOverlay] = useState<OverlayPayload | null>(null);
+  const [areaSummary, setAreaSummary] = useState<AreaSummary | null>(null);
   const [lastCacheKey, setLastCacheKey] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ completed: number; total: number } | null>(null);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
@@ -657,6 +676,8 @@ export default function App() {
         if (data.overlay) {
           setOverlay(data.overlay);
         }
+        const areas = data.metadata?.areas as AreaSummary | undefined;
+        setAreaSummary(areas ?? null);
         setLastCacheKey(item.cacheKey ?? null);
         const request = data.request ?? item.request;
         if (request?.observers && request.observers.length > 0) {
@@ -882,6 +903,8 @@ export default function App() {
             setOverlay(data.overlay);
             setLastCacheKey(request.cacheKey ?? null);
           }
+          const areas = data.metadata?.areas as AreaSummary | undefined;
+          setAreaSummary(areas ?? null);
         })
         .catch((error: Error) => {
           setScenarioStatus(error.message || 'Unable to load scenario overlay.');
@@ -892,6 +915,7 @@ export default function App() {
     } else {
       setOverlay(null);
       setLastCacheKey(null);
+      setAreaSummary(null);
     }
   };
 
@@ -961,6 +985,7 @@ export default function App() {
     setIsSubmitting(true);
     setSubmitError(null);
     setOverlay(null);
+    setAreaSummary(null);
     setLastCacheKey(null);
     setProgress(null);
     setActiveJobId(null);
@@ -1048,6 +1073,7 @@ export default function App() {
               } else {
                 setLastCacheKey(null);
               }
+              setAreaSummary((job.result?.areas as AreaSummary) ?? null);
               if (progressPollRef.current) {
                 window.clearInterval(progressPollRef.current);
                 progressPollRef.current = null;
@@ -1160,6 +1186,7 @@ export default function App() {
               } else {
                 setLastCacheKey(null);
               }
+              setAreaSummary((job.result?.areas as AreaSummary) ?? null);
               if (progressPollRef.current) {
                 window.clearInterval(progressPollRef.current);
                 progressPollRef.current = null;
@@ -1417,6 +1444,17 @@ export default function App() {
                 <span className="estimate__note">(excludes DEM fetch/cache)</span>
               </div>
             ) : null}
+            {areaSummary ? (
+              <div className="estimate estimate--areas">
+                <div>Visible area: ~{formatAreaKm2(areaSummary.visibleKm2)} km²</div>
+                {areaSummary.mutualVisibleKm2 !== undefined ? (
+                  <div>Mutually visible area: ~{formatAreaKm2(areaSummary.mutualVisibleKm2)} km²</div>
+                ) : null}
+                {areaSummary.completeVisibleKm2 !== undefined ? (
+                  <div>Complete visible area: ~{formatAreaKm2(areaSummary.completeVisibleKm2)} km²</div>
+                ) : null}
+              </div>
+            ) : null}
             {guardrail.warnings.map((warning) => (
               <div key={warning} className="warning">
                 {warning}
@@ -1436,6 +1474,7 @@ export default function App() {
               type="button"
               onClick={() => {
                 setOverlay(null);
+                setAreaSummary(null);
                 setLastCacheKey(null);
               }}
               disabled={!overlay}

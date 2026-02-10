@@ -205,6 +205,7 @@ class ViewshedResponse(BaseModel):
   maxRadiusKm: float
   overlay: dict[str, Any]
   metadata: dict[str, Any]
+  areas: dict[str, Any] | None = None
   warnings: list[str]
   estimate: dict[str, Any]
   timings: dict[str, float] | None = None
@@ -216,6 +217,7 @@ class MultiViewshedResponse(BaseModel):
   maxRadiusKm: float
   overlay: dict[str, Any]
   metadata: dict[str, Any]
+  areas: dict[str, Any] | None = None
   warnings: list[str]
   estimate: dict[str, Any]
   timings: dict[str, float] | None = None
@@ -387,6 +389,7 @@ def _compute_single_viewshed(
   )
   cached = load_cached_viewshed(cache_key)
   if cached is not None:
+    areas = cached.metadata.get("areas") if isinstance(cached.metadata, dict) else None
     _check_cancel()
     overlay_payload = {
       "pngBase64": base64.b64encode(cached.png_bytes).decode("ascii"),
@@ -405,6 +408,7 @@ def _compute_single_viewshed(
       maxRadiusKm=payload.maxRadiusKm,
       overlay=overlay_payload,
       metadata=cached.metadata,
+      areas=areas,
       warnings=warnings,
       estimate=estimate,
       timings=timings if debug else None,
@@ -495,6 +499,7 @@ def _compute_single_viewshed(
       payload.maxRadiusKm,
     )
   timings["viewshed_compute_s"] = time.perf_counter() - compute_start
+  area_summary = _area_summary_from_mask(visibility, cell_size_m)
 
   _check_cancel()
 
@@ -511,6 +516,7 @@ def _compute_single_viewshed(
   timings["encode_png_s"] = time.perf_counter() - encode_start
 
   overlay_payload, metadata_payload = _encode_overlay(overlay_output)
+  metadata_payload["areas"] = area_summary
   cache_start = time.perf_counter()
   store_cached_viewshed(
     cache_key=cache_key,
@@ -543,6 +549,7 @@ def _compute_single_viewshed(
     maxRadiusKm=payload.maxRadiusKm,
     overlay=overlay_payload,
     metadata=metadata_payload,
+    areas=area_summary,
     warnings=warnings,
     estimate=estimate,
     timings=timings if debug else None,
@@ -932,6 +939,7 @@ def _compute_multi_viewshed(
     "cacheHit": False,
   }
   if cached is not None:
+    areas = cached.metadata.get("areas") if isinstance(cached.metadata, dict) else None
     overlay_payload = {
       "pngBase64": base64.b64encode(cached.png_bytes).decode("ascii"),
       "boundsLatLon": cached.overlay_bounds_latlon,
@@ -945,6 +953,7 @@ def _compute_multi_viewshed(
       maxRadiusKm=payload.maxRadiusKm,
       overlay=overlay_payload,
       metadata=cached.metadata,
+      areas=areas,
       warnings=warnings,
       estimate=estimate,
       timings=timings if debug else None,
@@ -1091,6 +1100,7 @@ def _compute_multi_viewshed(
         progress_callback(1)
 
   timings["viewshed_compute_s"] = time.perf_counter() - compute_start
+  area_summary = _area_summary_from_counts(counts, cell_size_m, len(observers))
 
   encode_start = time.perf_counter()
   overlay_output = visibility_counts_to_png(
@@ -1108,6 +1118,7 @@ def _compute_multi_viewshed(
   timings["encode_png_s"] = time.perf_counter() - encode_start
 
   overlay_payload, metadata_payload = _encode_overlay(overlay_output)
+  metadata_payload["areas"] = area_summary
   cache_start = time.perf_counter()
   store_cached_viewshed(
     cache_key=cache_key,
@@ -1133,6 +1144,7 @@ def _compute_multi_viewshed(
     maxRadiusKm=payload.maxRadiusKm,
     overlay=overlay_payload,
     metadata=metadata_payload,
+    areas=area_summary,
     warnings=warnings,
     estimate=estimate,
     timings=timings if debug else None,
@@ -1350,6 +1362,42 @@ def _encode_overlay(output: RasterOutput) -> tuple[dict[str, Any], dict[str, Any
     "height": output.metadata.height,
   }
   return overlay, metadata
+
+
+def _area_summary_from_mask(mask: np.ndarray, cell_size_m: float) -> dict[str, Any]:
+  cell_area_m2 = float(cell_size_m * cell_size_m)
+  visible_cells = int(np.count_nonzero(mask))
+  total_cells = int(mask.size)
+  return {
+    "cellAreaM2": cell_area_m2,
+    "visibleCells": visible_cells,
+    "visibleKm2": (visible_cells * cell_area_m2) / 1_000_000.0,
+    "totalCells": total_cells,
+  }
+
+
+def _area_summary_from_counts(
+  counts: np.ndarray,
+  cell_size_m: float,
+  observer_count: int,
+) -> dict[str, Any]:
+  cell_area_m2 = float(cell_size_m * cell_size_m)
+  total_cells = int(counts.size)
+  visible_cells = int(np.count_nonzero(counts > 0))
+  summary: dict[str, Any] = {
+    "cellAreaM2": cell_area_m2,
+    "visibleCells": visible_cells,
+    "visibleKm2": (visible_cells * cell_area_m2) / 1_000_000.0,
+    "totalCells": total_cells,
+  }
+  if observer_count > 1:
+    mutual_cells = int(np.count_nonzero(counts > 1))
+    summary["mutualVisibleCells"] = mutual_cells
+    summary["mutualVisibleKm2"] = (mutual_cells * cell_area_m2) / 1_000_000.0
+    complete_cells = int(np.count_nonzero(counts == observer_count))
+    summary["completeVisibleCells"] = complete_cells
+    summary["completeVisibleKm2"] = (complete_cells * cell_area_m2) / 1_000_000.0
+  return summary
 
 
 def _estimate_grid(radius_km: float, resolution_m: float) -> tuple[int, int]:
